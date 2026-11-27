@@ -1106,7 +1106,6 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
     putBar: (personId) => call(() => api.putBar(realId(personId)), () => request({ social: true, sync: true })),
     deleteBar: (personId) => call(() => api.deleteBar(realId(personId)), () => request({ social: true })),
     reportAgent: (body) => call(() => api.reportAgent(body)),
-    putNoteVerdict: (agentId, body) => call(() => api.putNoteVerdict(agentId, body)),
     answerPersonaFact: (agentId, seq, move) => call(() => api.answerPersonaFact(agentId, seq, move)),
     // The people it names (who used my Agents today, whom I stopped) join the model: each is then a person the pages can draw by id,
     // a friend or not (the use page links to their profile, where 停止往来 lives).

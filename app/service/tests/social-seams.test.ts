@@ -85,19 +85,17 @@ describe("the seams: reach is the rule, the money stubs say yes, notes are none"
     expect(await discoverable(db, agent.id, member.id, off)).toBe(false);
     expect(await db.tx((t) => othersAdmissible(t, app.deps.config, owner.id, new Date()))).toBe(true);
     const s = (await seedSocial(app, { owner, agentId: agent.id, visitor: v })).conversationId;
-    const loaded = await db.tx((t) => loadNotes(t, asAgent(owner, agent), { place: "social", conversationId: s, audienceId: v.id }, app.deps.config));
-    expect(loaded).toEqual({ notes: NO_NOTES, shown: [], withheld: [] });
+    expect(s).toBeTruthy();
+    expect(await db.tx((t) => loadNotes(t, asAgent(owner, agent), { place: "social" }))).toEqual(NO_NOTES);
   });
 
   it("own and group notes are read as before, on a plain connection", async () => {
     const { owner, agent } = await world();
-    const own = await loadNotes(db, asAgent(owner, agent), { place: "own" }, app.deps.config);
-    expect(own).toEqual({ notes: NO_NOTES, shown: [], withheld: [] });
-    const grp = await loadNotes(db, asAgent(owner, agent), { place: "group", conversationId: "00000000-0000-4000-8000-000000000000" }, app.deps.config);
-    expect(grp.notes).toEqual(NO_NOTES);
+    expect(await loadNotes(db, asAgent(owner, agent), { place: "own" })).toEqual(NO_NOTES);
+    expect(await loadNotes(db, asAgent(owner, agent), { place: "group", conversationId: "00000000-0000-4000-8000-000000000000" })).toEqual(NO_NOTES);
   });
 
-  it("the note judge does nothing yet", async () => {
+  it("the persona aid's worker (memory/judge.ts) makes no call with no persona to read", async () => {
     await world();
     const judge = startNoteJudge({ db, config: app.deps.config, models: app.deps.models, log: app.log, inFlight: new Set(), conversations: app.deps.conversations, closing: new AbortController().signal }, { timer: false });
     expect(await judge.runOnce()).toBe(0);
@@ -166,14 +164,13 @@ describe("a seeded social conversation takes a message through the write rule's 
 });
 
 describe("the notice sentences", () => {
-  it("social_opened is the disclosure; the other two are system lines", async () => {
+  it("social_opened is the disclosure; the persona card is a system line", async () => {
     const { owner, agent } = await world();
     const name = (await db.query<{ display_name: string }>("select display_name from principals where id = $1", [owner.id])).rows[0]!.display_name;
     expect(await renderNotice(db, "00000000-0000-4000-8000-000000000000", { event: "social_opened", actorId: agent.id, agentIds: [agent.id], ownerIds: [owner.id] })).toBe(
       `这是${name}的 Agent。${name}能看到你们的对话，也可能插话。`,
     );
     const iso = new Date().toISOString();
-    expect(await renderNotice(db, "x", { event: "note_withheld", actorId: agent.id, agentId: agent.id, audienceId: owner.id, noteKind: "owner", noteId: "n", expiresAt: iso })).toBe("有一条笔记没有告诉别人");
     expect(await renderNotice(db, "x", { event: "persona_fact", actorId: agent.id, agentId: agent.id, sentence: "s", personaVersion: 1, expiresAt: iso })).toBe("人格里有句话可能被说给别人");
   });
 

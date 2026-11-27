@@ -187,7 +187,7 @@ export const resetTopic = (conversationId) => request("POST", `/api/conversation
 export const haltAgents = (conversationId) => request("POST", `/api/conversations/${seg(conversationId)}/agents/halt`);
 
 // ───────── model providers (the API key is sent in a body and never comes back: `keyLast4` only)
-// ───────── Agent social (app/service/README.md "Agent social"; lane A's contacts, bars, reports and verdicts, lane B's numbers)
+// ───────── Agent social (app/service/README.md "Agent social"; lane A's contacts, bars and reports, lane B's numbers)
 /** The Agents I added and the requests waiting for me → {mine: [{agentId, state, conversationId, since, until, ended}], waiting: [...]}. */
 export const listAgentContacts = () => request("GET", "/api/agent-contacts");
 /** Add an Agent: 201 {state: "live", conversationId} · 202 {state: "requested", until} · 404 · 409 is_yours · 429 cooldown {availableAt}. */
@@ -207,8 +207,6 @@ export const putBar = (personId) => request("PUT", `/api/bars/${seg(personId)}`)
 export const deleteBar = (personId) => request("DELETE", `/api/bars/${seg(personId)}`);
 /** body: {agentId, reason: "spam" | "harassment" | "privacy" | "other", note?} → 201 {id}. */
 export const reportAgent = (body) => request("POST", "/api/reports", body);
-/** The owner's yes or no on one note for one person; body: {noteKind, noteId, audienceId, share, cardSeq?} → {ok: true}. */
-export const putNoteVerdict = (agentId, body) => request("PUT", `/api/agents/${seg(agentId)}/note-verdicts`, body);
 /** Answers the persona-fact card at message `seq` → {ok: true, moved}; 409 answered | expired. */
 export const answerPersonaFact = (agentId, seq, move) => request("POST", `/api/agents/${seg(agentId)}/persona-facts/${seg(seq)}`, { move });
 /** What others' use of my Agents has used today against my one number → {limit, used, proactive, ownKeyPoints, reached, byPerson, stopped, notice}. */

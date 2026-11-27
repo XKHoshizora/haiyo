@@ -17,7 +17,7 @@ import { addContact, applyPolicy, approveContact, contactsOf, contactsOfAgent, d
 // (A5b): PUT and DELETE /api/bars/:personId.
 // (A5c): GET /api/agents/:id/contacts; PUT /api/agents/:id/contact-policy.
 // (A10): POST /api/reports. (A8b): POST /api/agents/:id/persona-facts/:seq.
-// Planned: PUT /api/agents/:id/note-verdicts. While `SOCIAL.enabled` is false every one of them
+// While `SOCIAL.enabled` is false every one of them
 // answers 404 (the lookup, `GET /api/principals/lookup`, is not here: it exists already).
 const empty = z.object({});
 const ok = z.object({ ok: z.literal(true) });

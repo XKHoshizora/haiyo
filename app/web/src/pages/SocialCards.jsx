@@ -1,6 +1,5 @@
 // The cards of Agent social that ask the owner something, in the owner's own conversation with their Agent. All of them are system
-// UI text, in the third person: never the Agent's voice. Ring 1a: the `persona_fact` card (the persona aid, A8b); ring 1b's A12c adds
-// the `note_withheld` card here. Following MemoryNotice (MemoryChip.jsx): one decision at a time, a refusal said on the card.
+// UI text, in the third person: never the Agent's voice: the `persona_fact` card (the persona aid, A8b; ring 1b adds no card). Following MemoryNotice (MemoryChip.jsx): one decision at a time, a refusal said on the card.
 import React, { useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { socialErrorText } from "../data/errorTexts.js";

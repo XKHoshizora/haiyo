@@ -767,8 +767,8 @@ export class DbAgentPort implements AgentPort {
           told: boolean;
           /** A reply somebody other than its owner caused: made at the Agent's level for such replies, with one tool round of one real call. */
           forOthers: boolean;
-          /** A social run: the notes it was shown and the ones left out, to be written to the run with its admission (B7c). */
-          social: { shown: readonly ShownNote[]; withheld: readonly ShownNote[] } | null;
+          /** A social run: the notes it was shown, to be written to the run with its admission (B7c). */
+          social: { shown: readonly ShownNote[] } | null;
         }
     > => {
       const { agent, state } = await this.lockRun(t, run);
@@ -860,16 +860,11 @@ export class DbAgentPort implements AgentPort {
       const found =
         place === "own" && agent.persona === ""
           ? null
-          : await loadNotes(
-              t,
-              agent,
-              place === "own" ? { place: "own" } : group ? { place: "group", conversationId: run.conversationId } : { place: "social", conversationId: run.conversationId, audienceId: state.caller_id! },
-              config,
-            );
-      const notes = found === null ? NO_NOTES : fitNotes(found.notes, place, config.siteTimezone, displayName, passageBudget(resolved.contextTokens, resolved.call.maxOutputTokens, config.memory.passageShare), planned).notes;
+          : await loadNotes(t, agent, place === "own" ? { place: "own" } : group ? { place: "group", conversationId: run.conversationId } : { place: "social" });
+      const notes = found === null ? NO_NOTES : fitNotes(found, place, config.siteTimezone, displayName, passageBudget(resolved.contextTokens, resolved.call.maxOutputTokens, config.memory.passageShare), planned).notes;
       // A social run records what it was shown: the refs of the notes `fitNotes` kept (each note a visitor may be shown carries its ref);
       // written with the admission (step 3), for its owner's eyes only (messages/read.ts `shownNotes`).
-      const socialNotes = social && found !== null ? { shown: [...notes.owner, ...notes.self].flatMap((n) => ("ref" in n ? [(n as { ref: ShownNote }).ref] : [])), withheld: found.withheld } : null;
+      const socialNotes = social && found !== null ? { shown: [...notes.owner, ...notes.self].flatMap((n) => ("ref" in n ? [(n as { ref: ShownNote }).ref] : [])) } : null;
       // What the web search's offer says of the reply (the product owner's rules, lane websearch2): a reply of an Agent
       // whose `webSearch` is on may have it, in every lane and on every model (a provider model's searches are paid from
       // its owner's points, tools/web/hold.ts); the toolbox adds it only while the site offers it, to a reply offered tools
@@ -1130,13 +1125,12 @@ export class DbAgentPort implements AgentPort {
         const resetsAt = err.details.resetsAt;
         return { end: { status: "failed", error: "no_quota", ...(typeof resetsAt === "string" ? { resetsAt } : {}) } };
       }
-      // What a social reply was shown of its owner's notes, and what was left out for want of a yes: written with the admission, in this
-      // transaction (null when empty, also over an earlier attempt's). Ring 1a: both always empty.
+      // What a social reply was shown of its owner's notes: written with the admission, in this transaction (null when empty, also over
+      // an earlier attempt's). (`withheld_notes`, ring 1b's old design, is never written: it stays null.)
       if (first.social !== null) {
-        await t.query("update agent_runs set shown_notes = $2::jsonb, withheld_notes = $3::jsonb where id = $1", [
+        await t.query("update agent_runs set shown_notes = $2::jsonb where id = $1", [
           run.id,
           first.social.shown.length > 0 ? JSON.stringify(first.social.shown) : null,
-          first.social.withheld.length > 0 ? JSON.stringify(first.social.withheld) : null,
         ]);
       }
       // What settlement learns the ratio from: the estimate at ratio 1 of a call that showed text only (an image's or a

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { DEFAULT_REASONING_ALLOWANCE, draftDeadlineMs, gatewayCeilingMs, judgeCountAt, loadConfig } from "../src/config.ts";
+import { DEFAULT_REASONING_ALLOWANCE, draftDeadlineMs, gatewayCeilingMs, loadConfig } from "../src/config.ts";
 
 const base = {
   DATABASE_URL: "postgres://x/y",
@@ -647,7 +647,6 @@ describe("the whispers configuration", () => {
 describe("the memory configuration", () => {
   const defaults = {
     model: null,
-    judgeModel: null,
     roomOwner: 2000,
     roomSelf: 3000,
     roomHearsay: 2000,
@@ -782,17 +781,13 @@ describe("the automatic-retry configuration (AGENTS)", () => {
   });
 });
 
-describe("the Agent social configuration (SOCIAL, OTHERS, MEMORY.judgeModel)", () => {
+describe("the Agent social configuration (SOCIAL, OTHERS)", () => {
   test("SOCIAL is off by default and OTHERS holds the plan's numbers", () => {
     expect(loadConfig({ ...base }).social).toEqual({ enabled: false });
     expect(loadConfig({ ...base, SOCIAL: "" }).social).toEqual({ enabled: false });
     expect(loadConfig({ ...base, SOCIAL: '{"enabled":true}' }).social).toEqual({ enabled: true });
-    expect(loadConfig({ ...base }).others).toEqual({
-      pointsPerDay: 300, toolCalls: 1, contextWeight: 4000,
-      notesWeight: 1000, judgeBatch: 20, judgeCallsPerDay: 5, withheldCallsPerDay: 3, judgeAttemptsPerVersion: 2, judgeInputBytes: 9000,
-      judgeOutputTokens: 2200, judgeOwnerExamples: 4, judgePollMs: 5000, judgeOwnersPerPoll: 10, withheldInputBytes: 6000, withheldCardsMax: 3,
-      cardDays: 7, requestDays: 7, cooldownDays: 30,
-    });
+    // (Ring 1b, option A: no notes judge; what is left paces the persona aid and bounds requests.)
+    expect(loadConfig({ ...base }).others).toEqual({ pointsPerDay: 300, toolCalls: 1, judgePollMs: 5000, judgeOwnersPerPoll: 10, cardDays: 7, requestDays: 7, cooldownDays: 30 });
     expect(loadConfig({ ...base, OTHERS: '{"pointsPerDay":30}' }).others).toMatchObject({ pointsPerDay: 30, toolCalls: 1 });
   });
 
@@ -802,21 +797,14 @@ describe("the Agent social configuration (SOCIAL, OTHERS, MEMORY.judgeModel)", (
     for (const bad of ['{"enabled":"yes"}', '{"enabled":1}', '{"surprise":true}', "nope"]) expect(() => loadConfig({ ...base, SOCIAL: bad }), bad).toThrow(/SOCIAL/);
   });
 
-  test("the withheld checks never take the whole of the judge's daily count (Controller ruling Q2)", () => {
-    expect(() => loadConfig({ ...base, OTHERS: '{"withheldCallsPerDay":5}' })).toThrow(/withheldCallsPerDay/);
-    expect(() => loadConfig({ ...base, OTHERS: '{"judgeCallsPerDay":3}' })).toThrow(/withheldCallsPerDay/);
-    expect(loadConfig({ ...base, OTHERS: '{"judgeCallsPerDay":4,"withheldCallsPerDay":3}' }).others).toMatchObject({ judgeCallsPerDay: 4, withheldCallsPerDay: 3 });
-  });
-
-  test("MEMORY.judgeModel names a site model, or is null", () => {
-    expect(loadConfig({ ...base }).memory.judgeModel).toBeNull();
-    expect(() => loadConfig({ ...base, MEMORY: '{"judgeModel":"no_such_model"}' })).toThrow(/judgeModel/);
-    expect(() => loadConfig({ ...base, MEMORY: '{"judgeModel":""}' })).toThrow(/MEMORY/);
-    expect(loadConfig({ ...withModels([model]), MEMORY: '{"judgeModel":"fast"}' }).memory.judgeModel).toBe("fast");
-  });
-
-  test("the judge's daily count at the design's cheapest prices: 9 000 × 140 + 2 200 × 280 = 1.876 points; ⌊10 / 1.876⌋ = 5", () => {
-    expect(judgeCountAt({ input: 140, output: 280 }, { memoryFreeDailyPoints: 20, judgeInputBytes: 9000, judgeOutputTokens: 2200 })).toBe(5);
-    expect(judgeCountAt({ input: 140, output: 280 }, { memoryFreeDailyPoints: 0, judgeInputBytes: 9000, judgeOutputTokens: 2200 })).toBe(0);
+  test("the keys of the notes judge ring 1b no longer has are unknown keys: a start that still sets one fails with the usual message", () => {
+    const gone = ["contextWeight", "notesWeight", "judgeBatch", "judgeCallsPerDay", "withheldCallsPerDay", "judgeAttemptsPerVersion", "judgeInputBytes", "judgeOutputTokens", "judgeOwnerExamples", "withheldInputBytes", "withheldCardsMax"];
+    for (const key of gone) {
+      expect(() => loadConfig({ ...base, OTHERS: JSON.stringify({ [key]: 3 }) }), key).toThrow(/^Invalid configuration: OTHERS: /);
+      expect(Object.keys(loadConfig({ ...base }).others)).not.toContain(key);
+    }
+    expect(() => loadConfig({ ...base, MEMORY: '{"judgeModel":"fast"}' })).toThrow(/^Invalid configuration: MEMORY: /);
+    expect(() => loadConfig({ ...withModels([model]), MEMORY: '{"judgeModel":"fast"}' })).toThrow(/^Invalid configuration: MEMORY: /);
+    expect(loadConfig({ ...base }).memory).not.toHaveProperty("judgeModel");
   });
 });

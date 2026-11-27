@@ -5,9 +5,8 @@ import { releasePersona, runPersonaAid, type Claimed } from "./persona-aid.ts";
 import type { Hub } from "../sync/hub.ts";
 
 /**
- * The background worker of Agent social's judgements: the persona aid in ring 1a (A8b), the batch note judge and the withheld check
- * in ring 1b (A7, A8a, which add to the same per-owner pass). `runOnce` does one pass and returns the model calls it made; `close`
- * ends what is under way. `deps.closing` is the signal every memory call is made with (`memoryCall(deps, ownerId, input, closing)`):
+ * The background worker of Agent social's persona aid (ring 1a, A8b; ring 1b, option A, adds no judge of its own). `runOnce` does one
+ * pass and returns the model calls it made; `close` ends what is under way. `deps.closing` is the signal every memory call is made with (`memoryCall(deps, ownerId, input, closing)`):
  * the service aborts it as it stops, before it waits for the memory calls, so a call in flight returns at once instead of holding the
  * stop; `close()` is called then too: the timer is cleared and no pass starts after it.
  *

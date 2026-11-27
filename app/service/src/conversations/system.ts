@@ -74,9 +74,7 @@ export async function renderNotice(q: Queryable, conversationId: string, e: Syst
       const owners = e.ownerIds.map(n).join("、");
       return `这是${owners}的 Agent。${owners}能看到你们的对话，也可能插话。`;
     }
-    // Only a title: the card's details travel in the event, to the owner's client alone (ring 1a and 1b).
-    case "note_withheld":
-      return "有一条笔记没有告诉别人";
+    // Only a title: the card's details travel in the event, to the owner's client alone (ring 1a).
     case "persona_fact":
       return "人格里有句话可能被说给别人";
   }

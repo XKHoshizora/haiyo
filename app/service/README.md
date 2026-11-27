@@ -248,10 +248,8 @@ other than an Agent's owner cannot reach it — no social conversation can be ma
 groups and everything that exists today behave as ever)),
 `OTHERS` (the numbers that bound others' use of an Agent, JSON, every field optional; Agent social, Configuration: `pointsPerDay`
 (300) is an owner's one number for what others cause on all their Agents a site day, unless the owner sets another (Agents and runs,
-The owner's number for others' use); `toolCalls` (1) the tool calls of one others' reply's one tool round; `contextWeight` (4000) and `notesWeight` (1000)
-what it is shown; `judgeBatch` (20), `judgeCallsPerDay` (5), `withheldCallsPerDay` (3, always less than `judgeCallsPerDay`),
-`judgeAttemptsPerVersion` (2), `judgeInputBytes` (9000), `judgeOutputTokens` (2200), `judgeOwnerExamples` (4), `judgePollMs` (5000),
-`judgeOwnersPerPoll` (10), `withheldInputBytes` (6000) and `withheldCardsMax` (3) the notes judge of ring 1b; `cardDays` (7),
+The owner's number for others' use); `toolCalls` (1) the tool calls of one others' reply's one tool round; `judgePollMs` (5000, at
+least 1000) and `judgeOwnersPerPoll` (10) how often the persona aid looks for personas to read and how many owners one look serves; `cardDays` (7),
 `requestDays` (7) and `cooldownDays` (30) how long a card can be answered, a contact request waits, and a stopped or declined
 request is refused),
 `AGENTS` (how a reply that failed for a passing reason is tried again by the system, JSON, every field optional;
@@ -734,9 +732,9 @@ replies, Log. Pushes write theirs (`push`, `push_off`, `push_config_refused`, `p
 
 Agent social writes four in ring 1a (Agent social, Counters; each a count and an id or a reason, never a text):
 `others_limit_refused` (a reply for others the owner's number refused as it was admitted),
-`social_post_refused` (a social reply the post-time check stopped), `persona_aid` (a persona read by the persona aid) and
-`agent_reported` (a report of an Agent). Ring 1b adds `note_judge_calls`, `note_judge_refused_count`, `note_judge_unanswered`
-and `withheld_checks`.
+`social_post_refused` (a social reply the post-time access check stopped), `persona_aid` (a persona read by the persona aid) and
+`agent_reported` (a report of an Agent). Ring 1b writes none of its own: what a social reply was shown is counted in the memory
+counters (`social_replies_with_notes`, `social_notes_shown`, `social_note_vaulted_from_reply`; each a `memory_stat` line).
 
 ### Usage and points
 
@@ -3280,18 +3278,19 @@ that Agent's own conversation (`unread` in `/api/sync`), as no other notice does
 Answering it does not read it; reading the conversation does. An expired card counts until the conversation is read.
 
 **Configuration.** `SOCIAL` (`{"enabled": false}`) and `OTHERS` (the numbers: an owner's one number a day, what one reply to
-others may do, the notes judge; Configuration), and `MEMORY.judgeModel`.
+others may do, the persona aid's pace, how long a card and a request last; Configuration). Ring 1b has no setting of its own: a
+social reply is shown what a group is (a key of its old design — `OTHERS.contextWeight`, `notesWeight`, `judge…`, `withheld…`, or
+`MEMORY.judgeModel` — still set stops the start as any unknown key does).
 
 **Counters.** `{ "metric": "<name>", … }`, ids, counts and reasons only, never a text. Written in ring 1a:
 `others_limit_refused` (`at`: `admission`; a reply for others the owner's number refused as it was admitted),
-`social_post_refused` (`reason`: a social reply the post-time check stopped),
-`persona_aid` (the persona aid read a persona: the Agent's id, how many cards) and `agent_reported` (the reason). Ring 1b's,
-not written yet: `note_judge_calls`, `note_judge_refused_count`, `note_judge_unanswered`, `withheld_checks`.
+`social_post_refused` (`reason`: a social reply the post-time access check stopped),
+`persona_aid` (the persona aid read a persona: the Agent's id, how many cards) and `agent_reported` (the reason). Ring 1b's are
+memory counters (Memory counters: `social_replies_with_notes`, `social_notes_shown`, `social_note_vaulted_from_reply`), no id and no text.
 
 **For whoever adds a route here.** A route gets its `####` heading in the same edit (`tests/readme.test.ts` wants a heading
 for every served route and for no other), its probe row in `tests/fuzz.test.ts` and, for a path parameter not in the list yet,
-its name in `tests/logging.test.ts`. An entry under 「Planned」 is the contract its ring writes to and answers the ordinary 404
-until then. Migration 073 holds the inert columns and the empty tables (`social_pairs`, `agent_contacts`); 074 is the step-L
+its name in `tests/logging.test.ts`. Migration 073 holds the inert columns and the empty tables (`social_pairs`, `agent_contacts`); 074 is the step-L
 change of the numbers; 075 is access (`access_bars`, the bars made from existing blocks, the persona aid's columns).
 
 #### `POST /api/agent-contacts`
@@ -3387,12 +3386,6 @@ the calls of others that wait for one are dropped, the owner's own wait on and g
 sweep within a minute after the command line), and its owner's own replies go on; no row is touched, and enabling gives access back. The command line has no live connection: screens that are open
 catch up at their next sync (a typed message to a disabled Agent is answered 403 at once). `reports:close --outcome disabled` disables the
 Agent too, by the same path (an outcome that only recorded would read as having acted); `dismissed` only records.
-
-**Planned: `PUT /api/agents/:id/note-verdicts`**
-
-*Session: required; the Agent's owner only.* Body `{"noteKind": "owner" | "self", "noteId", "audienceId", "share": boolean,
-"cardSeq"?: number}` (ring 1b): the owner's yes or no on one note for one person; a card's answer names its message
-in `cardSeq`. → 200 `{"ok": true}`.
 
 #### `POST /api/agents/:id/persona-facts/:seq`
 
@@ -3640,7 +3633,6 @@ client can render its own:
 | `agent_budget_reached` | `actorId` = `agentId` (the Agent whose `chainBudget` is reached) | in a group, the first Agent's message that would call it once its chain budget is reached — or the end of its reply that reached it, when only Agents' messages waited behind that reply (pushed after that reply's `run`); once per Agent until a person writes: “{Agent 名} 已达到本次接话的点数上限，有人发言后继续。” |
 | `others_limit_reached` | `actorId` = `agentId` (the Agent a call on was refused for it), `points` (the owner's number then) | in the Agent's own conversation, for its owner: the first call on any of the owner's Agents by someone other than the owner that the owner's number for others' use refuses — at the trigger, as a call that waited is taken, or a reply such a call queued as it was admitted; once per site day per owner, whichever Agent it was (Agents and runs, The owner's number for others' use); the conversation the call was made in is told nothing: “别人今天用你的 Agent 已经花到每天上限 {points} 点，今天不再回复别人；已经在回复的会照常回完。” (a notice of the event it replaced, `agent_daily_budget_reached`, stored in a group before, is still read back as stored; the web draws none) |
 | `social_opened` | `actorId` (the Agent reached), `agentIds`, `ownerIds` (the owners who watch and may write) | the first message of an `agent_social` conversation (Agent social): “这是{主人}的 Agent。{主人}能看到你们的对话，也可能插话。” (two owners: their names joined by 、) |
-| `note_withheld` | `actorId` = `agentId`, `audienceId`, `noteKind` (`owner` or `self`), `noteId`, `expiresAt` | ring 1b, in the Agent's own conversation, for its owner only: a note it held back from someone who asked about it (Agent social): “有一条笔记没有告诉别人” (the card's details come with the event, to the owner's client alone) |
 | `persona_fact` | `actorId` = `agentId`, `sentence`, `personaVersion`, `expiresAt` | ring 1a, in the Agent's own conversation, for its owner only: a sentence of the persona that looks like a fact about someone (Agent social): “人格里有句话可能被说给别人” |
 | `agent_quieted` | `actorId` = `agentId` (the Agent asked to keep quiet) | in a group, a person's message the judgement model is sure asks the Agent to be quiet, or says it is a nuisance: it hardly replies there unasked for a while (a mention still calls it); at most once an hour for each conversation and Agent; nothing says who asked: “「{Agent 名}」暂时不主动发言，需要时可以 @ 它” |
 
@@ -5187,7 +5179,6 @@ milliseconds.
 | Field | Default (range) | What it does |
 |---|---|---|
 | `model` | none (a site model's `id`) | The site model memory calls use; none: the cheapest free-tier site model (Memory calls) |
-| `judgeModel` | none (a site model's `id`; one that is not in `SITE_MODELS` stops the start) | The site model the notes judge and the withheld check use (Agent social, ring 1b); none: the memory model's |
 | `roomOwner`, `roomSelf`, `roomHearsay` | 2000, 3000, 2000 (1–3000: the database guards a note at 9000 characters) | What the notes about the owner, an Agent's own notes and what it heard may hold, at most, in weight |
 | `modelEntryMax` | 200 (1–200) | The longest an entry a model wrote is, in weight (every model-written note, in a review, a dream, hearsay and a conversion, and every item of a rolling summary, is held to it; the database guard of 600 characters on hearsay covers 200 weight) |
 | `quietMs`, `maxReplies` | 600 000 (1–86 400 000), 8 (1–1 000) | A review of an Agent's own conversation runs after this much quiet, or this many replies since the last |

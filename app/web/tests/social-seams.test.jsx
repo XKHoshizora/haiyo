@@ -36,7 +36,6 @@ describe("the route functions", () => {
     [() => routes.putBar(ID), "PUT", `/api/bars/${ID}`, undefined],
     [() => routes.deleteBar(ID), "DELETE", `/api/bars/${ID}`, undefined],
     [() => routes.reportAgent({ agentId: ID, reason: "spam" }), "POST", "/api/reports", { agentId: ID, reason: "spam" }],
-    [() => routes.putNoteVerdict(ID, { noteKind: "owner", noteId: ID2, audienceId: ID, share: true }), "PUT", `/api/agents/${ID}/note-verdicts`, { noteKind: "owner", noteId: ID2, audienceId: ID, share: true }],
     [() => routes.answerPersonaFact(ID, 4, true), "POST", `/api/agents/${ID}/persona-facts/4`, { move: true }],
     [() => routes.getOthersUse(), "GET", "/api/me/others-use", undefined],
     [() => routes.putOthersLimits({ answers: 50, points: "70" }), "PUT", "/api/me/others-limits", { answers: 50, points: "70" }],
@@ -73,9 +72,12 @@ describe("the thin actions", () => {
     expect(await layer.actions.approveAgentContact("a", "s")).toEqual({ state: "live", conversationId: ID });
     expect(api.approveAgentContact).toHaveBeenCalledWith("a", "s");
     await expect(layer.actions.putBar(ID)).rejects.toMatchObject({ status: 404 });
-    for (const name of ["addAgentContact", "declineAgentContact", "removeAgentContact", "getAgentContacts", "putContactPolicy", "deleteBar", "reportAgent", "putNoteVerdict", "answerPersonaFact", "getOthersUse", "putOthersLimits", "seenOthersNotice"]) {
+    for (const name of ["addAgentContact", "declineAgentContact", "removeAgentContact", "getAgentContacts", "putContactPolicy", "deleteBar", "reportAgent", "answerPersonaFact", "getOthersUse", "putOthersLimits", "seenOthersNotice"]) {
       expect(typeof layer.actions[name], name).toBe("function");
     }
+    // Ring 1b, option A: no per-person verdict, so no route or action for one.
+    expect(layer.actions.putNoteVerdict).toBeUndefined();
+    expect(routes.putNoteVerdict).toBeUndefined();
     layer.stop();
   });
 });
@@ -128,7 +130,6 @@ describe("the Agent page", () => {
     putBar: vi.fn(),
     deleteBar: vi.fn(),
     reportAgent: vi.fn(),
-    putNoteVerdict: vi.fn(),
     answerPersonaFact: vi.fn(),
   });
   /** The app on the Agent's page, with the site's switch as `social` says (absent: the sync does not carry it). */

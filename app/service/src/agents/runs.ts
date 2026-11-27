@@ -397,8 +397,9 @@ async function calledLastMinute(t: Tx, callerId: string): Promise<number> {
  * Why an Agent's running reply was cut short (`agent_runs.interrupted`): by the Agent's pause or delete, because the
  * Agent left the run's conversation (`agent_removed`), or because a member of the group halted Agents calling each
  * other and an Agent's message had called for it (`halted`, `haltAgents`). Agent social adds four: the owner wrote in the
- * social conversation the reply was for (`owner_spoke`), the access the reply was for ended (`access_ended`), a note the reply
- * was shown changed (`notes_changed`), and an errand it served ended (`errand_ended`; the errands plan's).
+ * social conversation the reply was for (`owner_spoke`), the access the reply was for ended (`access_ended`), an errand it served
+ * ended (`errand_ended`; the errands plan's), and `notes_changed`, which nothing writes any more (ring 1b, option A, has no post-time
+ * note check) and is kept so a row that holds it still reads.
  */
 export type Interruption = "agent_paused" | "agent_deleted" | "agent_removed" | "halted" | "owner_spoke" | "access_ended" | "notes_changed" | "errand_ended";
 

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { LoadedNotes, NotesPlace } from "../src/memory/passage.ts";
+import type { NotesPlace } from "../src/memory/passage.ts";
+import type { PromptNotes } from "../src/agents/runtime/prompt.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -15,10 +16,10 @@ import { closeAllSockets } from "./helpers/ws.ts";
  * by a reply that does not say it); `loadNotes`'s social answer is wired through `fitNotes`, and the refs of the notes it kept are
  * written to the run with the admission (`shown_notes`; null when empty); an others' reply is offered tools as the owner's own is.
  */
-const loadNotesOverride = vi.hoisted(() => ({ current: null as null | ((where: NotesPlace) => LoadedNotes | null) }));
+const loadNotesOverride = vi.hoisted(() => ({ current: null as null | ((where: NotesPlace) => PromptNotes | null) }));
 vi.mock("../src/memory/passage.ts", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/memory/passage.ts")>();
-  const wrapped = (async (q: never, agent: never, where: NotesPlace, config: never) => loadNotesOverride.current?.(where) ?? real.loadNotes(q, agent, where as never, config)) as typeof real.loadNotes;
+  const wrapped = (async (q: never, agent: never, where: NotesPlace) => loadNotesOverride.current?.(where) ?? real.loadNotes(q, agent, where)) as typeof real.loadNotes;
   return { ...real, loadNotes: wrapped };
 });
 
@@ -96,20 +97,15 @@ describe("a social run with a tool round", () => {
 });
 
 describe("loadNotes wired into the social run", () => {
-  it("a fake answer with two shown notes and one withheld: the kept notes' refs are the run's shown_notes, written with the admission and not before", async () => {
+  it("a fake answer with two notes: the kept notes' refs are the run's shown_notes, written with the admission and not before; withheld_notes is never written", async () => {
     const at = new Date("2026-03-01T04:00:00Z");
     const refs = [
       { kind: "owner" as const, id: "11111111-1111-4111-8111-111111111111", version: "v1" },
       { kind: "self" as const, id: "22222222-2222-4222-8222-222222222222", version: "v2" },
     ];
-    const withheld = { kind: "owner" as const, id: "33333333-3333-4333-8333-333333333333", version: "v3" };
     loadNotesOverride.current = (where) =>
       where.place === "social"
-        ? {
-            notes: { owner: [{ text: "SHOWN-OWNER 可以说的一条", updatedAt: at, ref: refs[0]! }], self: [{ text: "SHOWN-SELF 另一条", updatedAt: at, ref: refs[1]! }], hearsay: [] },
-            shown: refs,
-            withheld: [withheld],
-          }
+        ? { owner: [{ text: "SHOWN-OWNER 可以说的一条", updatedAt: at, ref: refs[0]! }], self: [{ text: "SHOWN-SELF 另一条", updatedAt: at, ref: refs[1]! }], hearsay: [] }
         : null;
     // A reply whose owner's number is reached by the time it is admitted (others' use today at it, one point) is refused there: nothing is written.
     const refused = await world("fake_refused", PAID_MODEL);
@@ -125,7 +121,7 @@ describe("loadNotes wired into the social run", () => {
     gateway.reply("好。");
     expect(await app.agentWorker.runOnce()).toBe(true);
     // (Ring 1b: there is no post-time note check, so the reply is posted whatever it was shown.)
-    expect(await runOf(w)).toMatchObject({ status: "done", error: null, shown_notes: refs, withheld_notes: [withheld] });
+    expect(await runOf(w)).toMatchObject({ status: "done", error: null, shown_notes: refs, withheld_notes: null });
     // The kept notes are in the request as the social passage shows them.
     expect(gateway.calls.at(-1)!.system).toContain("SHOWN-OWNER");
     expect(gateway.calls.at(-1)!.system).toContain("现在是在你和对方的对话里");

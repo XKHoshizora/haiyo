@@ -292,7 +292,7 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
       return true;
     }
     if (resolved === null) return true;
-    const { notes: found } = await loadNotes(db, agent, { place: "own" }, config);
+    const found = await loadNotes(db, agent, { place: "own" });
     const planned = planRatio(await db.tx((t) => readRatio(t, ratioKey(resolved))));
     return fitNotes(found, "own", config.siteTimezone, ownerName, passageBudget(resolved.contextTokens, resolved.call.maxOutputTokens, config.memory.passageShare), planned).fits;
   }

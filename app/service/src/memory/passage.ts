@@ -1,5 +1,4 @@
-import type { Config } from "../config.ts";
-import type { Queryable, Tx } from "../db.ts";
+import type { Queryable } from "../db.ts";
 import { NO_GROUP_TITLE, NO_NOTES, type PromptNote, type PromptNotes } from "../agents/runtime/prompt.ts";
 import { notesFor, type NoteKind } from "./store.ts";
 import { listRoomExact, type ExactNote } from "./write.ts";
@@ -12,10 +11,10 @@ import { listRoomExact, type ExactNote } from "./write.ts";
 export const LEFT_GROUP_TITLE = "一个已离开的群";
 
 /**
- * Where a run's notes are read for: the owner's own conversation with the Agent, a group, or a social conversation with
- * `audienceId` (the person the reply speaks to; ring 1b decides what they may be shown of the owner's notes).
+ * Where a run's notes are read for: the owner's own conversation with the Agent, a group, or a social conversation (whoever the
+ * reply speaks to: ring 1b, option A, makes no distinction between people).
  */
-export type NotesPlace = { place: "own" } | { place: "group"; conversationId: string } | { place: "social"; conversationId: string; audienceId: string };
+export type NotesPlace = { place: "own" } | { place: "group"; conversationId: string } | { place: "social" };
 
 /** A note a reply was shown: its kind, its id, and the version shown (the note's `updated_at` in `exactTs` form, memory/write.ts:30, compared in SQL only). */
 export interface ShownNote {
@@ -27,17 +26,6 @@ export interface ShownNote {
 /** A note of a social reply's passage with the reference that records it as shown. */
 export interface SocialNote extends PromptNote {
   ref: ShownNote;
-}
-
-/**
- * What `loadNotes` found: the notes for the passage, the notes a non-owner was shown (`shown`, for the post-time check) and the
- * ones that were left out because the audience may not be told them yet (`withheld`, for the withheld check). Both lists are
- * empty everywhere until ring 1b.
- */
-export interface LoadedNotes {
-  notes: PromptNotes;
-  shown: readonly ShownNote[];
-  withheld: readonly ShownNote[];
 }
 
 type NotesAgent = { id: string; ownerId: string; memory: boolean; sharedNotes: boolean };
@@ -65,16 +53,11 @@ async function socialNotes(q: Queryable, agent: NotesAgent): Promise<PromptNotes
  * Agent's owner is a current member there (else `LEFT_GROUP_TITLE`); a group that has no title is
  * `某个群`. `notesPassage` (agents/runtime/prompt.ts) turns the result into text.
  *
- * Own and group only read, and take any `Queryable`, so memory/routes.ts's call on `db` stays as it is. A social conversation is
- * shown what `socialNotes` says, read in the run's own transaction.
+ * A social conversation is shown what `socialNotes` says. Every place only reads, and takes any `Queryable` (a run reads in its own
+ * transaction; memory/routes.ts's measure reads on `db`).
  */
-export async function loadNotes(q: Queryable, agent: NotesAgent, where: Extract<NotesPlace, { place: "own" | "group" }>, config: Pick<Config, "others">): Promise<LoadedNotes>;
-export async function loadNotes(t: Tx, agent: NotesAgent, where: NotesPlace, config: Pick<Config, "others">): Promise<LoadedNotes>;
-export async function loadNotes(q: Queryable, agent: NotesAgent, where: NotesPlace, _config: Pick<Config, "others">): Promise<LoadedNotes> {
-  if (where.place === "social") {
-    const notes = await socialNotes(q, agent);
-    return { notes, shown: [...notes.owner, ...notes.self].map((n) => (n as SocialNote).ref), withheld: [] };
-  }
+export async function loadNotes(q: Queryable, agent: NotesAgent, where: NotesPlace): Promise<PromptNotes> {
+  if (where.place === "social") return socialNotes(q, agent);
   const found = await notesFor(q, agent, where.place === "group" ? { conversationId: where.conversationId, group: true } : { conversationId: "", group: false });
   const ids = [...new Set(found.hearsay.map((h) => h.conversationId))];
   const titles = new Map<string, string>();
@@ -89,6 +72,5 @@ export async function loadNotes(q: Queryable, agent: NotesAgent, where: NotesPla
       else if (r.title !== null && r.title !== "") titles.set(r.id, r.title);
     }
   }
-  const notes: PromptNotes = { ...found, hearsay: found.hearsay.map((h) => ({ ...h, group: titles.get(h.conversationId) ?? NO_GROUP_TITLE })) };
-  return { notes, shown: [], withheld: [] };
+  return { ...found, hearsay: found.hearsay.map((h) => ({ ...h, group: titles.get(h.conversationId) ?? NO_GROUP_TITLE })) };
 }
