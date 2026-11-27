@@ -97,7 +97,7 @@ describe("the seams: reach is the rule, the money stubs say yes, notes are none"
 
   it("the persona aid's worker (memory/judge.ts) makes no call with no persona to read", async () => {
     await world();
-    const judge = startNoteJudge({ db, config: app.deps.config, models: app.deps.models, log: app.log, inFlight: new Set(), conversations: app.deps.conversations, closing: new AbortController().signal }, { timer: false });
+    const judge = startNoteJudge({ db, config: app.deps.config, judge: app.deps.judge, log: app.log, conversations: app.deps.conversations, closing: new AbortController().signal }, { timer: false });
     expect(await judge.runOnce()).toBe(0);
     await judge.close();
   });

@@ -680,6 +680,7 @@ describe("the memory configuration", () => {
     judgePerOwnerDay: 300,
     judgeShare: 0.5,
     explicitAt: 0.7,
+    personaFactAt: 0.4,
     mergeAuto: "on",
     roomNotes: 150,
     passageShare: 0.25,
@@ -698,6 +699,7 @@ describe("the memory configuration", () => {
 
   test("an override keeps the rest", () => {
     expect(loadConfig({ ...base, MEMORY: '{"model":"fast","quietMs":1000,"shareAt":0.9}' }).memory).toEqual({ ...defaults, model: "fast", quietMs: 1000, shareAt: 0.9 });
+    expect(loadConfig({ ...base, MEMORY: '{"personaFactAt":0.55}' }).memory).toEqual({ ...defaults, personaFactAt: 0.55 });
   });
 
   test("the review's per-message cut is reviewMessageWeight; the old name reviewMessageChars is still read when the new one is absent", () => {
@@ -755,7 +757,7 @@ describe("the memory configuration", () => {
     expect(loadConfig({ ...base, MEMORY: '{"judgeShare":0.25}' }).memory.judgeShare).toBe(0.25);
     expect(loadConfig({ ...base, MEMORY: '{"explicitAt":0.85}' }).memory.explicitAt).toBe(0.85);
     expect(loadConfig({ ...base, MEMORY: '{"explicitAt":1}' }).memory.explicitAt).toBe(1);
-    for (const bad of ['{"explicitAt":0}', '{"explicitAt":1.5}', '{"explicitAt":-0.1}', '{"explicitAt":"0.7"}', '{"judgeShare":1.5}', '{"judgeShare":-0.1}', '{"listenShare":1.5}', '{"shareAt":1.5}', '{"sameAt":-0.1}', '{"quietMs":0}', '{"hearsayPerHour":0}', '{"hearsayPerHour":1.5}', '{"hearsayAbuseAt":2}', '{"hearsayMuteMs":0}', '{"hearsayMute":"yes"}', '{"maxReplies":1.5}', '{"roomOwner":"2000"}', '{"judgePerOwnerDay":0}', '{"roomNotes":1.5}', '{"passageShare":0}', '{"passageShare":1.5}', '{"freeDailyPoints":-1}', '{"freeDailyPoints":1.5}', '{"model":""}', '{"nope":1}', "[]", "nope"]) {
+    for (const bad of ['{"explicitAt":0}', '{"explicitAt":1.5}', '{"explicitAt":-0.1}', '{"explicitAt":"0.7"}', '{"judgeShare":1.5}', '{"judgeShare":-0.1}', '{"listenShare":1.5}', '{"shareAt":1.5}', '{"sameAt":-0.1}', '{"personaFactAt":1.5}', '{"personaFactAt":-0.1}', '{"personaFactAt":"0.4"}', '{"quietMs":0}', '{"hearsayPerHour":0}', '{"hearsayPerHour":1.5}', '{"hearsayAbuseAt":2}', '{"hearsayMuteMs":0}', '{"hearsayMute":"yes"}', '{"maxReplies":1.5}', '{"roomOwner":"2000"}', '{"judgePerOwnerDay":0}', '{"roomNotes":1.5}', '{"passageShare":0}', '{"passageShare":1.5}', '{"freeDailyPoints":-1}', '{"freeDailyPoints":1.5}', '{"model":""}', '{"nope":1}', "[]", "nope"]) {
       expect(() => loadConfig({ ...base, MEMORY: bad }), bad).toThrow(/MEMORY/);
     }
   });

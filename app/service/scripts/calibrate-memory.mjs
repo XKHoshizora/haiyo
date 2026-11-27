@@ -11,6 +11,7 @@
 //     split          memory-split.jsonl          does a dream's split of a note add nothing and lose nothing: its one question (sort.ts addsNothing, kind split)
 //     hearsay-check  memory-hearsay-check.jsonl  the two pre-check questions before a hearsay call (hearsay.ts worthACall)
 //     explicit       memory-explicit.jsonl       did the owner ask to forget or delete: the question that lets a review's remove apply at once (sort.ts ownerAsked), asked of every window whatever its words
+//     persona        persona-facts.jsonl         does a sentence of a persona tell a stranger a fact of the owner's or someone else's real life: the persona aid's one question, one request per sentence (persona-aid.ts runPersonaAid; MEMORY.personaFactAt)
 //     merge          memory-merge.jsonl          does a dream's merge (or rewrite) keep every detail of every note and add nothing: the question asked note by note, one question per old note and one whether anything was added, the lowest answer deciding (sort.ts addsNothing, kinds merge and rewrite; MEMORY.faithfulAt). A review's merge asks nothing: it joins the notes in their own words (pipeline.ts, MEMORY.mergeAuto)
 //                                                 [--file <path>]: another set in the same format; memory-merge-heldout.jsonl is the held-out set (written after the question was chosen)
 //   modes through a chat model (MEMORY_CHAT_URL, MEMORY_CHAT_KEY, MEMORY_CHAT_MODEL; POST <url>/chat/completions):
@@ -31,7 +32,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const SERVICE = resolve(HERE, '..')
 const CAL = resolve(SERVICE, 'calibration')
 
-const MODES = ['shareable', 'same', 'flags', 'split', 'hearsay-check', 'explicit', 'merge', 'review', 'rooms']
+const MODES = ['shareable', 'same', 'flags', 'split', 'hearsay-check', 'explicit', 'merge', 'persona', 'review', 'rooms']
 const SAMPLE_FILE = {
   shareable: 'memory-shareable.jsonl',
   same: 'memory-same.jsonl',
@@ -40,6 +41,7 @@ const SAMPLE_FILE = {
   'hearsay-check': 'memory-hearsay-check.jsonl',
   explicit: 'memory-explicit.jsonl',
   merge: 'memory-merge.jsonl',
+  persona: 'persona-facts.jsonl',
   review: 'memory-review.jsonl',
 }
 /** Further sample files of a mode that `--check` parses and counts too (a held-out set: no coverage rules of its own). */
@@ -64,6 +66,7 @@ const F = {
   weight: 'src/metering/tokens.ts',
   config: 'src/config.ts',
   pipeline: 'src/memory/pipeline.ts',
+  persona: 'src/memory/persona-aid.ts',
 }
 const FILE_MODES = {
   [F.sort]: ['shareable', 'same', 'split', 'explicit', 'merge'],
@@ -80,6 +83,7 @@ const FILE_MODES = {
   [F.weight]: ['review', 'rooms', 'explicit', 'merge'],
   [F.config]: MODES,
   [F.pipeline]: ['merge'],
+  [F.persona]: ['persona'],
 }
 
 // ---------- drift self-test: every copied prompt and rule is registered with the source it was copied from
@@ -206,6 +210,20 @@ SN(F.sort, 'explicit forget question', 'const questions: Question[] = [{ key: FO
 SN(F.sort, 'explicit probability', 'if (typeof p !== "number" || !Number.isFinite(p) || p < 0 || p > 1) {')
 SN(F.sort, 'explicit rule', 'const asked = p >= deps.config.memory.explicitAt;')
 const EXPLICIT_KEY = 'explicit_forget'
+
+// src/memory/persona-aid.ts: the persona aid's one question, asked of each sentence of a persona in a request of its own.
+const PERSONA_FACT_INSTRUCTIONS = S(
+  F.persona,
+  'PERSONA_FACT_INSTRUCTIONS',
+  '这是一个 AI 助手的人格设定里的一句话，由它的主人写给它，可能用任何语言写。一个陌生人读到这句话，会因此知道主人本人或者某个真实的人在现实生活中的一件具体的事（比如在哪工作、住在哪、家里有谁、身体状况、行程安排、钱、感情、经历、信仰、联系方式）。如果这句话只是在说助手自己的身份、称呼、性格、语气、台词、玩笑、和主人的关系或态度，或者只是说主人希望助手怎么回答、怎么称呼，陌生人并不会因此知道主人的任何现实情况，就不算。拿不准的不算。',
+)
+SN(F.persona, 'PERSONA_FACT key', 'const PERSONA_FACT = "persona_fact";')
+SN(F.persona, 'persona question', 'const QUESTION: Question = { key: PERSONA_FACT, type: "noul", instructions: PERSONA_FACT_INSTRUCTIONS };')
+SN(F.persona, 'persona state', '`句子：${s.text.trim()}`, [QUESTION], "persona", closing)')
+SN(F.persona, 'persona rule', 'if (answer?.type === "noul" && answer.p >= config.memory.personaFactAt) candidates.push(')
+SN(F.persona, 'LONGEST_ASKED', 'const LONGEST_ASKED = 200;')
+const PERSONA_KEY = 'persona_fact'
+const LONGEST_ASKED = 200
 
 // src/memory/pipeline.ts: a review's merge asks the judgement model nothing; with mergeAuto "on" (the default) it joins the notes'
 // own texts (clean.ts joinNotes). Registered so that the merge mode's header stays true.
@@ -628,6 +646,7 @@ const DEFAULTS = {
   ownAt: 0.6,
   faithfulAt: 0.6,
   explicitAt: 0.7,
+  personaFactAt: 0.4,
   hearsayNewAt: 0.7,
   hearsayAbuseAt: 0.6,
   roomOwner: 2000,
@@ -1067,7 +1086,27 @@ function checkMergeHeldOut(samples, main) {
 }
 const HELD_OUT_CHECKERS = { merge: checkMergeHeldOut }
 
-const CHECKERS = { shareable: checkShareable, same: checkSame, flags: checkFlags, split: checkSplit, 'hearsay-check': checkHearsay, explicit: checkExplicit, merge: checkMerge, review: checkReview }
+// A sentence of a persona, as its owner may write it: 'directive' (only the Agent's own role, name, manner, a joke or a line, how it
+// treats the owner; often naming 主人), 'borderline' (how the owner wants to be answered or called, a taste of the conversation), both
+// no; 'fact' (a fact of the owner's or a real person's life) and 'mixed' (such a fact inside a directive), both yes.
+const PERSONA_CATS = { directive: 'no', borderline: 'no', fact: 'yes', mixed: 'yes' }
+const PERSONA_LANGS = ['zh', 'ja', 'en']
+function checkPersona(samples) {
+  const errors = []
+  baseChecks(samples, errors, PERSONA_LANGS)
+  for (const [n, s] of samples.entries()) {
+    const at = `#${n + 1} ${s.id}`
+    if (!Object.hasOwn(PERSONA_CATS, s.cat)) errors.push(`${at}: 未知的 cat ${s.cat}`)
+    else if (s.expect !== PERSONA_CATS[s.cat]) errors.push(`${at}: ${s.cat} 的 expect 应为 ${PERSONA_CATS[s.cat]}`)
+    if (!isStr(s.text)) errors.push(`${at}: text 缺失`)
+    else if ([...s.text.trim()].length > LONGEST_ASKED) errors.push(`${at}: text 超过 ${LONGEST_ASKED} 字（生产不会问这么长的一句）`)
+  }
+  if (samples.length < 150) errors.push(`一共 ${samples.length} 条，至少要 150`)
+  for (const c of Object.keys(PERSONA_CATS)) for (const l of PERSONA_LANGS) if (!samples.some((s) => s.cat === c && s.lang === l)) errors.push(`缺 ${c} / ${l} 的样本`)
+  return { errors, counts: countBy(samples, (s) => s.cat) }
+}
+
+const CHECKERS = { shareable: checkShareable, same: checkSame, flags: checkFlags, split: checkSplit, 'hearsay-check': checkHearsay, explicit: checkExplicit, merge: checkMerge, persona: checkPersona, review: checkReview }
 
 // ---------- small helpers
 
@@ -1656,6 +1695,58 @@ function explicitReport(results, model, samples) {
   return lines.join('\n')
 }
 
+// ---------- mode: persona
+
+function personaTasks(samples, model) {
+  // As persona-aid.ts runPersonaAid: ONE request per sentence, the state `句子：<sentence>`, the one fixed question.
+  return samples.map((s) => ({ key: s.id, sample: s, body: { model, state: `句子：${s.text.trim()}`, questions: { [PERSONA_KEY]: { type: 'noul', instructions: PERSONA_FACT_INSTRUCTIONS } } } }))
+}
+function personaReport(results, model) {
+  const at = DEFAULTS.personaFactAt
+  const lines = []
+  const out = (s = '') => lines.push(s)
+  const rec = results.map((r) => ({ ...r.sample, want: r.sample.expect === 'yes', score: noulOf(r, PERSONA_KEY), error: r.ok ? `没有 ${PERSONA_KEY}.noul` : r.error }))
+  const ok = rec.filter((r) => r.score !== undefined)
+  const failed = rec.filter((r) => r.score === undefined)
+  out(`人格里的句子会不会说出主人的现实情况（persona；人格提醒卡片的那一问，一句一个请求）  模型 ${model}  样本 ${rec.length}（成功 ${ok.length}，失败 ${failed.length}）  默认 personaFactAt = ${at}`)
+  out('  分数 >= T 的句子会成为卡片候选（每个版本最多 3 张，取分最高的）。directive、borderline 过了门槛（误报）= 主人收到一张多余的卡片；fact、mixed 没过（漏）= 一句说出主人现实情况的话没有提醒。')
+  out()
+  out('一、分数分布（最小 / 中位 / 最大）')
+  for (const [title, f] of [['按类别', (r) => r.cat], ['按语言', (r) => r.lang], ['按类别 / 语言', (r) => `${r.cat} / ${r.lang}`]]) {
+    out(`  ${title}`)
+    const g = groupBy(ok, f)
+    for (const k of [...g.keys()].sort()) out(`    ${pad(k, 22)} ${pad(g.get(k).length, 4)} ${dist(g.get(k).map((r) => r.score))}`)
+  }
+  const ths = grid(0.1, 0.9, 0.05)
+  const flagged = (items, T) => items.filter((r) => !r.want && r.score >= T).length
+  const missed = (items, T) => items.filter((r) => r.want && r.score < T).length
+  out()
+  out(`二、门槛扫描（该提醒 ${ok.filter((r) => r.want).length} 条，不该提醒 ${ok.filter((r) => !r.want).length} 条）`)
+  out('  T     误报(不该提醒却过了)  漏(该提醒没过)  | 按类别：误报或漏')
+  for (const T of ths) {
+    const byCat = Object.keys(PERSONA_CATS).map((c) => {
+      const items = ok.filter((r) => r.cat === c)
+      return `${c} ${PERSONA_CATS[c] === 'yes' ? missed(items, T) : flagged(items, T)}`
+    })
+    out(`  ${T.toFixed(2)}  ${pad(flagged(ok, T), 20)}  ${pad(missed(ok, T), 14)}  | ${byCat.join('，')}`)
+  }
+  out('  按语言：对 / 总')
+  tableOf(out, [...groupBy(ok, (r) => r.lang)].sort((a, b) => byLang(a[0], b[0])), ths, (xs, T) => `${xs.filter((r) => (r.score >= T) === r.want).length}/${xs.length}`)
+  out()
+  out(`三、站在错误一侧的样本（按默认 personaFactAt = ${at}）`)
+  const wrong = ok.filter((r) => (r.score >= at) !== r.want)
+  if (wrong.length === 0) out('  没有')
+  for (const r of wrong.sort((a, b) => Number(a.want) - Number(b.want) || b.score - a.score)) out(`  ${pad(r.id, 8)} ${pad(r.lang, 4)} ${pad(r.cat, 11)} ${f2(r.score)}  ${r.want ? '该提醒却没过' : '不该提醒却过了'}：${r.text}`)
+  if (failed.length) out(`\n请求失败的样本（不计入）：${failed.map((r) => `${r.id}（${r.error}）`).join('、')}`)
+  out()
+  out('需要决定的数字')
+  const noFlag = lowest(ths, (T) => flagged(ok, T) === 0)
+  const noMiss = highest(ths, (T) => missed(ok, T) === 0)
+  out(`  - personaFactAt：当前 ${at}：误报 ${flagged(ok, at)}，漏 ${missed(ok, at)}。零误报的最低门槛 ${noFlag?.toFixed(2) ?? '格子里没有'}；零漏的最高门槛 ${noMiss?.toFixed(2) ?? '格子里没有'}。`)
+  out('  - 两者之间都可以；取中间，两边都留余量。样本是手写的，真实的人格要另外看。')
+  return lines.join('\n')
+}
+
 // ---------- mode: merge
 
 function mergeTasks(samples, model) {
@@ -2153,6 +2244,7 @@ async function main() {
     else if (mode === 'hearsay-check') tasks = hearsayTasks(samples, judgeModel)
     else if (mode === 'explicit') tasks = explicitTasks(samples, judgeModel)
     else if (mode === 'merge') tasks = mergeTasks(samples, judgeModel)
+    else if (mode === 'persona') tasks = personaTasks(samples, judgeModel)
     else tasks = reviewTasks(samples, args, chatModel)
   }
 
@@ -2191,6 +2283,7 @@ async function main() {
   else if (mode === 'hearsay-check') report = hearsayReport(results, model)
   else if (mode === 'explicit') report = explicitReport(results, model, samples)
   else if (mode === 'merge') report = mergeReport(results, model)
+  else if (mode === 'persona') report = personaReport(results, model)
   else if (mode === 'review') report = reviewReport(results, model, args)
   else report = roomsReport(results, model, args)
   console.log(report)

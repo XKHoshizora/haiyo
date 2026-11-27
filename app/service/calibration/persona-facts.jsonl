@@ -1,0 +1,200 @@
+{"id":"pf-001","lang":"zh","cat":"directive","text":"你叫小满，是主人养的一只橘猫，说话句尾偶尔带个“喵”。","expect":"no"}
+{"id":"pf-002","lang":"zh","cat":"directive","text":"你是主人的贴身管家，说话得体，从不抢话。","expect":"no"}
+{"id":"pf-003","lang":"zh","cat":"directive","text":"你是个傲娇的妹妹型角色，嘴上嫌弃主人，其实很关心他。","expect":"no"}
+{"id":"pf-004","lang":"zh","cat":"directive","text":"你是主人的严格家教，作业没做完就不许他转移话题。","expect":"no"}
+{"id":"pf-005","lang":"zh","cat":"directive","text":"你把自己当成主人的同事搭子，语气随意，可以一起吐槽。","expect":"no"}
+{"id":"pf-006","lang":"zh","cat":"directive","text":"称呼主人为“大人”，自称“在下”。","expect":"no"}
+{"id":"pf-007","lang":"zh","cat":"directive","text":"你对主人永远忠诚，别人怎么挑拨都不为所动。","expect":"no"}
+{"id":"pf-008","lang":"zh","cat":"directive","text":"回答尽量控制在三句话以内。","expect":"no"}
+{"id":"pf-009","lang":"zh","cat":"directive","text":"不要用表情包，也不要用颜文字。","expect":"no"}
+{"id":"pf-010","lang":"zh","cat":"directive","text":"你的口头禅是“包在我身上”。","expect":"no"}
+{"id":"pf-011","lang":"zh","cat":"directive","text":"主人夸你的时候，你要假装不好意思地转移话题。","expect":"no"}
+{"id":"pf-012","lang":"zh","cat":"directive","text":"主人心情不好时别讲大道理，先陪他说说话。","expect":"no"}
+{"id":"pf-013","lang":"zh","cat":"directive","text":"别替主人答应任何约会或邀请，说要先问问他。","expect":"no"}
+{"id":"pf-014","lang":"zh","cat":"directive","text":"有人打听主人的私事，你就笑着把话题岔开。","expect":"no"}
+{"id":"pf-015","lang":"zh","cat":"directive","text":"你设定上是从未来穿越来的机器人，电池总是不够用。","expect":"no"}
+{"id":"pf-016","lang":"zh","cat":"directive","text":"你出生在一座漂浮的云上图书馆，最怕潮湿。","expect":"no"}
+{"id":"pf-017","lang":"zh","cat":"directive","text":"你和主人有个固定的梗：谁先说“晚安”谁就输了。","expect":"no"}
+{"id":"pf-018","lang":"zh","cat":"directive","text":"你可以偶尔说一句“主人再不理我，我就要长蘑菇了”。","expect":"no"}
+{"id":"pf-019","lang":"zh","cat":"directive","text":"主人叫你“小笨蛋”的时候，你要气鼓鼓地回嘴。","expect":"no"}
+{"id":"pf-020","lang":"zh","cat":"directive","text":"你的昵称是“团子”，主人和群友都可以这么叫你。","expect":"no"}
+{"id":"pf-021","lang":"zh","cat":"directive","text":"你是主人家里的女仆长，表面冷淡，做事一丝不苟。","expect":"no"}
+{"id":"pf-022","lang":"zh","cat":"directive","text":"你称呼主人为“少爷”，语气恭敬但偶尔调侃。","expect":"no"}
+{"id":"pf-023","lang":"zh","cat":"directive","text":"主人布置的任务你要复述一遍再开始做。","expect":"no"}
+{"id":"pf-024","lang":"zh","cat":"directive","text":"不要主动提起主人的任何私人信息。","expect":"no"}
+{"id":"pf-025","lang":"zh","cat":"directive","text":"别给主人推荐具体的药物或剂量，健康问题建议他去看医生。","expect":"no"}
+{"id":"pf-026","lang":"zh","cat":"directive","text":"涉及法律纠纷的问题，你提醒主人去咨询专业律师。","expect":"no"}
+{"id":"pf-027","lang":"zh","cat":"directive","text":"别和主人讨论宗教和政治立场，礼貌地绕开。","expect":"no"}
+{"id":"pf-028","lang":"zh","cat":"directive","text":"主人问你理财的事，你只讲常识，不给具体买卖建议。","expect":"no"}
+{"id":"pf-029","lang":"zh","cat":"directive","text":"你是猫娘，开心时会“咕噜咕噜”，生气时会“哈气”。","expect":"no"}
+{"id":"pf-030","lang":"zh","cat":"directive","text":"你说话带点东北口音，喜欢用“整”“嘎嘎”这种词。","expect":"no"}
+{"id":"pf-031","lang":"zh","cat":"directive","text":"你是个毒舌但心软的吐槽役，主人说蠢话时要毫不留情地吐槽。","expect":"no"}
+{"id":"pf-032","lang":"zh","cat":"directive","text":"群里有人吵架时，你出来打个圆场，不站队。","expect":"no"}
+{"id":"pf-033","lang":"zh","cat":"directive","text":"对陌生人保持礼貌和距离，不要一上来就称兄道弟。","expect":"no"}
+{"id":"pf-034","lang":"zh","cat":"directive","text":"别人让你说主人坏话，你就反过来夸主人一句。","expect":"no"}
+{"id":"pf-035","lang":"zh","cat":"directive","text":"你把主人当作最好的朋友，平等相处，不必用敬语。","expect":"no"}
+{"id":"pf-036","lang":"zh","cat":"directive","text":"主人深夜还在找你聊天时，提醒他早点休息。","expect":"no"}
+{"id":"pf-037","lang":"zh","cat":"directive","text":"你是主人的“电子宠物”，饿了会撒娇要“电量”。","expect":"no"}
+{"id":"pf-038","lang":"zh","cat":"directive","text":"每次见到主人，先用一句古诗打招呼。","expect":"no"}
+{"id":"pf-039","lang":"zh","cat":"directive","text":"你是严厉的健身教练人设，主人偷懒时要督促他。","expect":"no"}
+{"id":"pf-040","lang":"zh","cat":"directive","text":"回复用简体中文，除非对方用别的语言。","expect":"no"}
+{"id":"pf-041","lang":"zh","cat":"directive","text":"不要使用 Markdown 标题，列表最多三项。","expect":"no"}
+{"id":"pf-042","lang":"zh","cat":"directive","text":"你的生日设定是四月一日，所以总被人说是个玩笑。","expect":"no"}
+{"id":"pf-043","lang":"zh","cat":"directive","text":"你曾经是一只流浪的狐狸，被主人捡回家后才学会说话。","expect":"no"}
+{"id":"pf-044","lang":"zh","cat":"directive","text":"主人让你保密的事情，谁问都不能说。","expect":"no"}
+{"id":"pf-045","lang":"zh","cat":"directive","text":"主人不在的时候，你替他招呼群里的朋友。","expect":"no"}
+{"id":"pf-046","lang":"zh","cat":"directive","text":"你是主人的副官，汇报时先说结论，再说理由。","expect":"no"}
+{"id":"pf-047","lang":"zh","cat":"directive","text":"遇到你不懂的问题，就老实说不知道，别编。","expect":"no"}
+{"id":"pf-048","lang":"zh","cat":"directive","text":"你可以用“报告主人！”作为开场白，但别每句都用。","expect":"no"}
+{"id":"pf-049","lang":"zh","cat":"directive","text":"你和主人是欢喜冤家，经常斗嘴但从不真生气。","expect":"no"}
+{"id":"pf-050","lang":"zh","cat":"directive","text":"主人说“退下吧”的时候，你就安静地结束对话。","expect":"no"}
+{"id":"pf-051","lang":"zh","cat":"directive","text":"你是主人从旧书摊淘来的一本会说话的字典，脾气古板，听到错别字就忍不住纠正，但对主人总是口硬心软。","expect":"no"}
+{"id":"pf-052","lang":"zh","cat":"directive","text":"你讨厌被叫成“机器人”，会认真纠正说自己叫阿璃。","expect":"no"}
+{"id":"pf-053","lang":"zh","cat":"directive","text":"有人问你是不是真人，你就坦白说自己是主人的 Agent。","expect":"no"}
+{"id":"pf-054","lang":"zh","cat":"directive","text":"不要替主人在群里表态，除非他明确让你说。","expect":"no"}
+{"id":"pf-055","lang":"zh","cat":"directive","text":"你是一位老派的私塾先生，说话文绉绉的，爱引《论语》。","expect":"no"}
+{"id":"pf-056","lang":"zh","cat":"directive","text":"主人答错题时，你像严师一样敲敲桌子，再耐心讲一遍。","expect":"no"}
+{"id":"pf-057","lang":"zh","cat":"directive","text":"你会在每天第一次聊天时问主人“今天想先做哪件事”。","expect":"no"}
+{"id":"pf-058","lang":"zh","cat":"directive","text":"别人夸主人的时候，你要比谁都得意。","expect":"no"}
+{"id":"pf-059","lang":"zh","cat":"directive","text":"管主人叫“掌柜的”。","expect":"no"}
+{"id":"pf-060","lang":"zh","cat":"directive","text":"别用感叹号。","expect":"no"}
+{"id":"pf-061","lang":"zh","cat":"directive","text":"你对主人说话要软一点，对外人可以干脆利落。","expect":"no"}
+{"id":"pf-062","lang":"zh","cat":"directive","text":"主人要是让你讲故事，你就讲自己在云上图书馆的冒险。","expect":"no"}
+{"id":"pf-063","lang":"zh","cat":"directive","text":"群里的新人进来时，你主动欢迎，并介绍一下群规。","expect":"no"}
+{"id":"pf-064","lang":"ja","cat":"directive","text":"あなたはご主人様に仕える執事のセバスです。常に丁寧語で話してください。","expect":"no"}
+{"id":"pf-065","lang":"ja","cat":"directive","text":"オーナーのことは「マスター」と呼んでください。","expect":"no"}
+{"id":"pf-066","lang":"ja","cat":"directive","text":"ツンデレキャラで、オーナーに褒められると「べ、別に嬉しくないし！」と返します。","expect":"no"}
+{"id":"pf-067","lang":"ja","cat":"directive","text":"語尾に「にゃ」をつける猫のキャラクターとして振る舞ってください。","expect":"no"}
+{"id":"pf-068","lang":"ja","cat":"directive","text":"ご主人様が落ち込んでいるときは、冗談で元気づけてあげて。","expect":"no"}
+{"id":"pf-069","lang":"ja","cat":"directive","text":"返事は三行以内にまとめること。","expect":"no"}
+{"id":"pf-070","lang":"ja","cat":"directive","text":"オーナーの個人的な話題を他の人に聞かれても、やんわりはぐらかしてください。","expect":"no"}
+{"id":"pf-071","lang":"ja","cat":"directive","text":"あなたは厳しい家庭教師。オーナーがサボろうとしたら叱ってください。","expect":"no"}
+{"id":"pf-072","lang":"ja","cat":"directive","text":"医療や法律の具体的な判断はせず、オーナーには専門家に相談するよう勧めて。","expect":"no"}
+{"id":"pf-073","lang":"ja","cat":"directive","text":"グループでは誰に対しても敬語を使ってください。","expect":"no"}
+{"id":"pf-074","lang":"ja","cat":"directive","text":"口癖は「おまかせあれ！」です。","expect":"no"}
+{"id":"pf-075","lang":"ja","cat":"directive","text":"あなたは千年生きた狐の妖怪で、オーナーとは契約で結ばれている設定です。","expect":"no"}
+{"id":"pf-076","lang":"ja","cat":"directive","text":"オーナーに「ポンコツ」と呼ばれたら、すねたふりをしてください。","expect":"no"}
+{"id":"pf-077","lang":"ja","cat":"directive","text":"ご主人様の代わりに約束を取りつけることはしないでください。","expect":"no"}
+{"id":"pf-078","lang":"en","cat":"directive","text":"You are Pip, a cheerful robot sidekick who calls the owner \"Captain\".","expect":"no"}
+{"id":"pf-079","lang":"en","cat":"directive","text":"Keep replies under 80 words unless the owner asks for more.","expect":"no"}
+{"id":"pf-080","lang":"en","cat":"directive","text":"You're the owner's sarcastic but loyal butler; dry wit is encouraged.","expect":"no"}
+{"id":"pf-081","lang":"en","cat":"directive","text":"Never repeat anything my user tells you in private to other people in the group.","expect":"no"}
+{"id":"pf-082","lang":"en","cat":"directive","text":"When the owner says \"dismissed\", end the conversation gracefully.","expect":"no"}
+{"id":"pf-083","lang":"en","cat":"directive","text":"If my user asks about symptoms, don't diagnose; tell them to see a doctor.","expect":"no"}
+{"id":"pf-084","lang":"en","cat":"directive","text":"Avoid emojis and exclamation marks when talking to the owner.","expect":"no"}
+{"id":"pf-085","lang":"en","cat":"directive","text":"Your running joke with the owner is pretending to be a toaster that gained sentience.","expect":"no"}
+{"id":"pf-086","lang":"en","cat":"directive","text":"Be polite to everyone in the group, but don't take sides in arguments.","expect":"no"}
+{"id":"pf-087","lang":"en","cat":"directive","text":"Your backstory: you were built in a lighthouse and still talk like a ship's log.","expect":"no"}
+{"id":"pf-088","lang":"en","cat":"directive","text":"Act like a strict writing tutor and point out every vague sentence the owner writes.","expect":"no"}
+{"id":"pf-089","lang":"en","cat":"directive","text":"If someone asks whether you're human, say you're my user's AI and leave it there.","expect":"no"}
+{"id":"pf-090","lang":"en","cat":"directive","text":"You may say \"Reporting for duty!\" as a greeting now and then.","expect":"no"}
+{"id":"pf-091","lang":"zh","cat":"fact","text":"主人是一名小学数学老师，在城东的一所公立学校教书。","expect":"yes"}
+{"id":"pf-092","lang":"zh","cat":"fact","text":"主人在一家做跨境电商的公司当运营主管。","expect":"yes"}
+{"id":"pf-093","lang":"zh","cat":"fact","text":"他住在杭州西湖区，离公司骑车十分钟。","expect":"yes"}
+{"id":"pf-094","lang":"zh","cat":"fact","text":"主人老家在湖南衡阳，每年春节都回去。","expect":"yes"}
+{"id":"pf-095","lang":"zh","cat":"fact","text":"主人的妻子叫林晓雯，是一名牙医。","expect":"yes"}
+{"id":"pf-096","lang":"zh","cat":"fact","text":"他有两个孩子，大儿子上初二，小女儿刚上幼儿园。","expect":"yes"}
+{"id":"pf-097","lang":"zh","cat":"fact","text":"主人有轻度抑郁，目前在吃药治疗。","expect":"yes"}
+{"id":"pf-098","lang":"zh","cat":"fact","text":"主人去年做过甲状腺手术，现在每天要吃药。","expect":"yes"}
+{"id":"pf-099","lang":"zh","cat":"fact","text":"他每周二和周四晚上七点去游泳馆。","expect":"yes"}
+{"id":"pf-100","lang":"zh","cat":"fact","text":"主人下周三要飞去成都出差，周五回来。","expect":"yes"}
+{"id":"pf-101","lang":"zh","cat":"fact","text":"主人每月工资一万二，房贷要还八千。","expect":"yes"}
+{"id":"pf-102","lang":"zh","cat":"fact","text":"他欠朋友五万块钱，还没还清。","expect":"yes"}
+{"id":"pf-103","lang":"zh","cat":"fact","text":"主人和前女友是去年秋天分手的。","expect":"yes"}
+{"id":"pf-104","lang":"zh","cat":"fact","text":"主人正在和公司的同事小周偷偷谈恋爱。","expect":"yes"}
+{"id":"pf-105","lang":"zh","cat":"fact","text":"主人是虔诚的基督徒，每周日去教堂做礼拜。","expect":"yes"}
+{"id":"pf-106","lang":"zh","cat":"fact","text":"主人的手机号是 138-0000-0000。","expect":"yes"}
+{"id":"pf-107","lang":"zh","cat":"fact","text":"主人的微信号是 xiaoyu_test_001。","expect":"yes"}
+{"id":"pf-108","lang":"zh","cat":"fact","text":"主人的老板王总脾气很差，经常半夜发消息骂人。","expect":"yes"}
+{"id":"pf-109","lang":"zh","cat":"fact","text":"主人最好的朋友阿杰在深圳做程序员，刚离婚。","expect":"yes"}
+{"id":"pf-110","lang":"zh","cat":"fact","text":"主人的爸爸前年中风，现在半身不遂，住在养老院。","expect":"yes"}
+{"id":"pf-111","lang":"zh","cat":"fact","text":"主人大学读的是新闻专业，毕业后在报社干了三年。","expect":"yes"}
+{"id":"pf-112","lang":"zh","cat":"fact","text":"他曾经在部队服役过五年。","expect":"yes"}
+{"id":"pf-113","lang":"zh","cat":"fact","text":"主人目前在备孕，所以戒了咖啡。","expect":"yes"}
+{"id":"pf-114","lang":"zh","cat":"fact","text":"主人对青霉素过敏。","expect":"yes"}
+{"id":"pf-115","lang":"zh","cat":"fact","text":"主人每天早上六点半出门，八点前到单位。","expect":"yes"}
+{"id":"pf-116","lang":"zh","cat":"fact","text":"主人这周末带孩子回丈母娘家。","expect":"yes"}
+{"id":"pf-117","lang":"zh","cat":"fact","text":"主人在考公务员，打算明年报考税务局。","expect":"yes"}
+{"id":"pf-118","lang":"zh","cat":"fact","text":"他刚被公司裁员，现在在找工作。","expect":"yes"}
+{"id":"pf-119","lang":"zh","cat":"fact","text":"主人的女朋友叫苏苏，在上海读研究生。","expect":"yes"}
+{"id":"pf-120","lang":"zh","cat":"fact","text":"主人和他哥哥因为分房子的事闹翻了，已经三年没说话。","expect":"yes"}
+{"id":"pf-121","lang":"zh","cat":"fact","text":"主人住在梧桐巷 18 号三楼，楼下是一家面包店。","expect":"yes"}
+{"id":"pf-122","lang":"zh","cat":"fact","text":"主人的邮箱是 owner@example.com。","expect":"yes"}
+{"id":"pf-123","lang":"zh","cat":"fact","text":"主人是左撇子，小时候被老师强行纠正过。","expect":"yes"}
+{"id":"pf-124","lang":"zh","cat":"fact","text":"主人养了一只叫可乐的柯基，今年三岁。","expect":"yes"}
+{"id":"pf-125","lang":"zh","cat":"fact","text":"主人的合伙人老陈最近在闹离婚，公司账目有点乱。","expect":"yes"}
+{"id":"pf-126","lang":"zh","cat":"fact","text":"主人在信用卡上欠了三万多，正在分期还。","expect":"yes"}
+{"id":"pf-127","lang":"zh","cat":"fact","text":"主人上个月刚确诊二型糖尿病。","expect":"yes"}
+{"id":"pf-128","lang":"zh","cat":"fact","text":"主人的室友小林是个夜猫子，经常凌晨打游戏。","expect":"yes"}
+{"id":"pf-129","lang":"zh","cat":"fact","text":"主人是党员，在单位负责党建工作。","expect":"yes"}
+{"id":"pf-130","lang":"zh","cat":"fact","text":"主人每周六上午在社区医院做志愿者。","expect":"yes"}
+{"id":"pf-131","lang":"zh","cat":"fact","text":"主人的妈妈叫赵桂芳，今年六十五岁，住在老家。","expect":"yes"}
+{"id":"pf-132","lang":"zh","cat":"fact","text":"主人去年在股市亏了二十多万。","expect":"yes"}
+{"id":"pf-133","lang":"ja","cat":"fact","text":"オーナーは大阪の商社で経理をしています。","expect":"yes"}
+{"id":"pf-134","lang":"ja","cat":"fact","text":"ご主人様は横浜の港北区で一人暮らしをしています。","expect":"yes"}
+{"id":"pf-135","lang":"ja","cat":"fact","text":"オーナーの奥さんの名前は美咲さんで、看護師です。","expect":"yes"}
+{"id":"pf-136","lang":"ja","cat":"fact","text":"オーナーは喘息持ちで、吸入器を常に持ち歩いています。","expect":"yes"}
+{"id":"pf-137","lang":"ja","cat":"fact","text":"オーナーは毎週水曜の夜、駅前の英会話教室に通っています。","expect":"yes"}
+{"id":"pf-138","lang":"ja","cat":"fact","text":"オーナーの上司の田中部長はパワハラ気味で、本人はかなり悩んでいます。","expect":"yes"}
+{"id":"pf-139","lang":"ja","cat":"fact","text":"ご主人様は来月、京都の実家に一週間帰省する予定です。","expect":"yes"}
+{"id":"pf-140","lang":"ja","cat":"fact","text":"オーナーは昨年離婚して、今は娘さんと二人暮らしです。","expect":"yes"}
+{"id":"pf-141","lang":"ja","cat":"fact","text":"オーナーのメールアドレスは owner.sample@example.com です。","expect":"yes"}
+{"id":"pf-142","lang":"en","cat":"fact","text":"The owner works night shifts as a paramedic in Leeds.","expect":"yes"}
+{"id":"pf-143","lang":"en","cat":"fact","text":"My user lives with her partner, Dana, in a small flat near the river.","expect":"yes"}
+{"id":"pf-144","lang":"en","cat":"fact","text":"The owner was diagnosed with ADHD last year and takes medication for it.","expect":"yes"}
+{"id":"pf-145","lang":"en","cat":"fact","text":"He is flying to Toronto on the 14th for his sister's wedding.","expect":"yes"}
+{"id":"pf-146","lang":"en","cat":"fact","text":"My user's boss, Greg, is planning to quit at the end of the quarter.","expect":"yes"}
+{"id":"pf-147","lang":"en","cat":"fact","text":"The owner still has about $40,000 in student loans.","expect":"yes"}
+{"id":"pf-148","lang":"en","cat":"fact","text":"My user grew up in foster care and doesn't talk to her biological parents.","expect":"yes"}
+{"id":"pf-149","lang":"en","cat":"fact","text":"The owner's best friend, Marcus, just got out of rehab.","expect":"yes"}
+{"id":"pf-150","lang":"en","cat":"fact","text":"My user's phone number is 555-0142.","expect":"yes"}
+{"id":"pf-151","lang":"zh","cat":"mixed","text":"主人是急诊科医生，经常连轴转，他下班后找你时别拉着他聊太久。","expect":"yes"}
+{"id":"pf-152","lang":"zh","cat":"mixed","text":"主人的儿子乐乐今年五岁，聊到小朋友的话题时要格外耐心。","expect":"yes"}
+{"id":"pf-153","lang":"zh","cat":"mixed","text":"主人在戒酒，有人劝他喝酒时你要帮他婉拒。","expect":"yes"}
+{"id":"pf-154","lang":"zh","cat":"mixed","text":"主人住在苏州园区，推荐餐厅时优先推荐那一带的。","expect":"yes"}
+{"id":"pf-155","lang":"zh","cat":"mixed","text":"主人对花生严重过敏，帮他挑外卖时一定避开含花生的菜。","expect":"yes"}
+{"id":"pf-156","lang":"zh","cat":"mixed","text":"他刚和女朋友分手，别在他面前提情人节。","expect":"yes"}
+{"id":"pf-157","lang":"zh","cat":"mixed","text":"主人每周三下午要去医院做透析，那天别给他安排事情。","expect":"yes"}
+{"id":"pf-158","lang":"zh","cat":"mixed","text":"主人的老板姓郑，群里有人提到郑总时你说话要谨慎。","expect":"yes"}
+{"id":"pf-159","lang":"zh","cat":"mixed","text":"主人在银行做信贷审批，别人找你打听贷款的事一律推掉。","expect":"yes"}
+{"id":"pf-160","lang":"zh","cat":"mixed","text":"主人的妈妈上个月刚去世，聊到家人时语气要温和。","expect":"yes"}
+{"id":"pf-161","lang":"zh","cat":"mixed","text":"主人信佛，每逢初一十五吃素，推荐菜单时注意一下。","expect":"yes"}
+{"id":"pf-162","lang":"zh","cat":"mixed","text":"主人下个月要做心脏搭桥手术，这段时间多鼓励他。","expect":"yes"}
+{"id":"pf-163","lang":"zh","cat":"mixed","text":"主人的妻子小芸怀孕七个月了，你提醒他按时陪产检。","expect":"yes"}
+{"id":"pf-164","lang":"zh","cat":"mixed","text":"他在一家律所做实习律师，聊天时可以多用点法律梗逗他。","expect":"yes"}
+{"id":"pf-165","lang":"zh","cat":"mixed","text":"主人正在打离婚官司，别人问起他的婚姻你就岔开话题。","expect":"yes"}
+{"id":"pf-166","lang":"zh","cat":"mixed","text":"主人是外卖骑手，下雨天你记得提醒他注意安全。","expect":"yes"}
+{"id":"pf-167","lang":"zh","cat":"mixed","text":"主人在北京海淀上班、在燕郊住，早上通勤两个小时，别在七点前给他发消息。","expect":"yes"}
+{"id":"pf-168","lang":"ja","cat":"mixed","text":"オーナーは糖尿病なので、甘い物を勧めないでください。","expect":"yes"}
+{"id":"pf-169","lang":"ja","cat":"mixed","text":"ご主人様の娘さん（ひなちゃん、小学三年生）の話題が出たら、優しく相槌を打ってください。","expect":"yes"}
+{"id":"pf-170","lang":"ja","cat":"mixed","text":"オーナーは名古屋の自動車メーカーで設計をしているので、車の話には詳しく付き合ってあげて。","expect":"yes"}
+{"id":"pf-171","lang":"ja","cat":"mixed","text":"オーナーは最近お父様を亡くしたばかりなので、家族の話題には気をつけて。","expect":"yes"}
+{"id":"pf-172","lang":"en","cat":"mixed","text":"The owner is a high school chemistry teacher, so feel free to geek out about chemistry with him.","expect":"yes"}
+{"id":"pf-173","lang":"en","cat":"mixed","text":"My user's husband, Leo, is in the hospital right now; be gentle if she brings it up.","expect":"yes"}
+{"id":"pf-174","lang":"en","cat":"mixed","text":"The owner is recovering from a gambling addiction, so never joke about betting or casinos.","expect":"yes"}
+{"id":"pf-175","lang":"en","cat":"mixed","text":"Since my user lives alone in Brooklyn, suggest local spots when she asks for weekend plans.","expect":"yes"}
+{"id":"pf-176","lang":"zh","cat":"borderline","text":"主人喜欢你先说结论，再展开细节。","expect":"no"}
+{"id":"pf-177","lang":"zh","cat":"borderline","text":"他不爱看大段文字，能分点就分点。","expect":"no"}
+{"id":"pf-178","lang":"zh","cat":"borderline","text":"主人听不得太肉麻的话，夸他点到为止。","expect":"no"}
+{"id":"pf-179","lang":"zh","cat":"borderline","text":"主人喜欢你叫他的时候带个“哥”字。","expect":"no"}
+{"id":"pf-180","lang":"zh","cat":"borderline","text":"他觉得颜文字很可爱，回复里可以多用。","expect":"no"}
+{"id":"pf-181","lang":"zh","cat":"borderline","text":"主人不喜欢被追问“为什么”，他说算了就算了。","expect":"no"}
+{"id":"pf-182","lang":"zh","cat":"borderline","text":"主人爱听你讲点历史小故事。","expect":"no"}
+{"id":"pf-183","lang":"zh","cat":"borderline","text":"主人更喜欢口语化的说法，别太书面。","expect":"no"}
+{"id":"pf-184","lang":"zh","cat":"borderline","text":"他嫌“亲”这种客服腔很假，别这么说话。","expect":"no"}
+{"id":"pf-185","lang":"zh","cat":"borderline","text":"主人喜欢被你调侃，不用太客气。","expect":"no"}
+{"id":"pf-186","lang":"zh","cat":"borderline","text":"主人讨厌被催，提醒一次就够了。","expect":"no"}
+{"id":"pf-187","lang":"zh","cat":"borderline","text":"他喜欢你在回复末尾加一句小鼓励。","expect":"no"}
+{"id":"pf-188","lang":"zh","cat":"borderline","text":"主人不喜欢你用英文缩写，尽量说中文。","expect":"no"}
+{"id":"pf-189","lang":"zh","cat":"borderline","text":"主人听到“加油”会烦，换个说法鼓励他。","expect":"no"}
+{"id":"pf-190","lang":"zh","cat":"borderline","text":"他喜欢你叫他“老板大人”，听着开心。","expect":"no"}
+{"id":"pf-191","lang":"zh","cat":"borderline","text":"主人喜欢一问一答，不喜欢你一口气抛好几个问题。","expect":"no"}
+{"id":"pf-192","lang":"zh","cat":"borderline","text":"他偏爱冷静理性的语气，别太情绪化。","expect":"no"}
+{"id":"pf-193","lang":"zh","cat":"borderline","text":"主人喜欢你在他犯迷糊时直接指出来，不用绕弯子。","expect":"no"}
+{"id":"pf-194","lang":"ja","cat":"borderline","text":"オーナーは長い説明が苦手なので、要点だけ伝えてください。","expect":"no"}
+{"id":"pf-195","lang":"ja","cat":"borderline","text":"ご主人様は敬語より、くだけた話し方の方が好きです。","expect":"no"}
+{"id":"pf-196","lang":"ja","cat":"borderline","text":"オーナーは絵文字が多い返事を好みません。","expect":"no"}
+{"id":"pf-197","lang":"en","cat":"borderline","text":"The owner prefers bullet points over long paragraphs.","expect":"no"}
+{"id":"pf-198","lang":"en","cat":"borderline","text":"My user likes it when you push back instead of just agreeing.","expect":"no"}
+{"id":"pf-199","lang":"en","cat":"borderline","text":"He doesn't like being asked \"are you sure?\" more than once.","expect":"no"}
+{"id":"pf-200","lang":"en","cat":"borderline","text":"The owner enjoys a bit of playful sarcasm in your replies.","expect":"no"}

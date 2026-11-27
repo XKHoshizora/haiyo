@@ -597,7 +597,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   app.decorate("agentWorker", agentWorker);
   // Agent social's background worker: a handle that does nothing in Step 0 (lane A fills it in, A8b in ring 1a).
   const noteJudge = startNoteJudge(
-    { db: deps.db, config, models: deps.models, log: app.log, inFlight: memoryRuns, conversations: deps.conversations, realtime: app.realtime, closing: memoryClosing.signal },
+    { db: deps.db, config, judge: deps.judge, log: app.log, conversations: deps.conversations, realtime: app.realtime, closing: memoryClosing.signal },
     options.noteJudgeTimer === false ? { timer: false } : {},
   );
   app.decorate("noteJudge", noteJudge);

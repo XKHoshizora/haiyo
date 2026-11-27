@@ -573,6 +573,12 @@ export interface MemoryConfig {
    */
   explicitAt: number;
   /**
+   * The persona aid (memory/persona-aid.ts): a sentence of a persona the judgement model is at least this sure tells a stranger a fact
+   * of the owner's or someone else's real life is a candidate for a card. 0.4 as calibrated on the real judgement model (2026-11-28,
+   * `calibration/persona-facts.jsonl`): no sentence about the Agent itself above 0.26, no fact below 0.53.
+   */
+  personaFactAt: number;
+  /**
    * What a review does with a `merge` op (the notes it names are one thing; ids only, memory/ops.ts) in the owner's own conversation:
    * "on" (default) joins the notes' own texts as they are (memory/clean.ts `joinNotes`) — nobody is asked — and applies the joined note
    * at once as one change (with 先问我再记: as a card); "off" ignores the op. A replace and removes are never read as a merge.
@@ -652,6 +658,8 @@ const memorySchema = z.preprocess(renamedReviewWeight, z.strictObject({
   judgeShare: probability(0.5),
   // Above 0: at 0 every answer would be a yes. 0.7 as calibrated on the real judgement model (memory/sort.ts `ownerAsked`).
   explicitAt: probability(0.7).refine((p) => p > 0),
+  // 0.4 as calibrated on the real judgement model (memory/persona-aid.ts, docs/acceptance/memory/calibration.md).
+  personaFactAt: probability(0.4),
   // A review's merge op joins the notes verbatim (the product owner's decision of 2026-11-21): no model text, no judge question.
   mergeAuto: z.enum(["off", "on"]).default("on"),
   roomNotes: positive(150, 100_000),

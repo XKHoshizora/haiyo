@@ -3390,11 +3390,20 @@ Agent too, by the same path (an outcome that only recorded would read as having 
 
 *Session: required; the Agent's owner only.* Body `{"move": boolean}` (ring 1a: the persona aid): answers the `persona_fact` card at
 message `seq` of the Agent's own conversation. The card says that a sentence of the persona looks like a fact about the owner or someone
-else (a persona is read whole by anyone the Agent talks to); it is made by the persona aid, which reads each new persona version once on
-the owner's memory model and allowance (one call per version, none while `SOCIAL.enabled` is off and nothing stamped then, so that at the
-first switch-on every persona that exists is read once, ten owners a poll; none for an owner's own edit; a call refused for a moment
-because the owner's calls are at their cap is made at a later pass), keeps only whole sentences of the persona (no fragment, clause or few
-characters; a sentence the owner answered 不用, or whose card still waits, is not asked again), at most three, and shows a card to its owner alone: `system.card`
+else (a persona is read whole by anyone the Agent talks to); it is made by the persona aid (`src/memory/persona-aid.ts`), which reads each
+new persona version once: its first 40 whole sentences (no fragment, clause or few characters; one over 200 characters, such as a
+paragraph with no end mark the persona aid knows, is not asked; the same sentence once) are each asked ONE yes/no question of the
+judgement model, in a request of its own (state `句子：<sentence>`): does it tell a stranger a fact of the owner's or another real
+person's life (a sentence that only gives the Agent a role, a name, a manner, a joke or a line, or says how the owner wants to be
+answered, does not). No chat model is called and no memory allowance spent; the requests are memory judgements (`MEMORY.judgePerOwnerDay`,
+`judgeShare`, `judge_memory_call_persona`), and sorting keeps priority: a persona is read only while the owner's judgements of the day,
+with the ones the read will make, stay within half of `judgePerOwnerDay` and the site's within half of memory's share, else at a later
+pass (an owner already at half is not claimed). None while `SOCIAL.enabled` is off and nothing stamped then, so that at the first
+switch-on every persona that exists is read once, ten owners a poll; none for an owner's own edit; a request refused for a moment (no
+place among the judgement's calls, the limits unreadable, the service stopping) gives the version back to a later pass, while no
+judgement model, a day used up meanwhile or a failed request leave it read (what was answered stands). A sentence scored at
+`MEMORY.personaFactAt` (0.4) or more is a candidate; of those the owner has not answered 不用 and whose card does not still wait, the
+three highest get a card, in the persona's order, shown to its owner alone: `system.card`
 `{"answer": "moved" | "kept" | null, "expired": boolean, "sentence"}`. `move: true` takes the sentence out of the persona (the sentence as a whole, with its end mark; the persona's version goes up and counts as read) and writes it as a note about the owner (in the vault); a sentence no
 longer in the persona changes nothing and is answered `kept`. `move: false` leaves everything and records `kept`. One answer per card
 (`social_card_answers`); a card is answerable `OTHERS.cardDays` days. → 200 `{"ok": true, "moved": boolean}`; 404 `not_found` for what is
@@ -5193,9 +5202,10 @@ milliseconds.
 | `hearsayMute` | `"observe"` (`"off"`, `"observe"`, `"on"`) | `"on"`: flooding speakers are muted as above; `"observe"`: nobody is muted or dropped, and `memory_mute_would` is logged (counts only) each time a speaker would have been; `"off"`: the flooding question is not asked |
 | `dreamSweepMs`, `dreamIdleMs`, `dreamEveryMs` | 900 000 (1–86 400 000), 10 800 000 (1–604 800 000), 72 000 000 (1–2 592 000 000) | 入梦 (An Agent's memory): how often the sweep looks for owners to consolidate; how long an owner must have sent no message anywhere; the least time between two dreams of an owner, and between two naps of a room |
 | `napAt`, `faithfulAt` | 0.8, 0.6 (0–1) | A room a change leaves at or above this share of its limit is consolidated at once (a nap); a dream's merge, rewrite or split of entries is applied when the judgement model is at least this sure the result adds nothing the entries did not say and loses nothing they did (a merge or a rewrite: every one of its questions, one per entry and one whether anything was added, the lowest deciding; a review's merge is not judged: its notes are joined in their own words, `mergeAuto`) |
-| `judgePerOwnerDay` | 300 (1–1 000 000) | The site's judgement model is asked at most this many times a site day on behalf of one owner's memory (sorting, the duplicate test, the faithful check, the hearsay pre-check, whether the owner asked; `memory_judge_usage`, counted as `judge_usage` is): past it that owner's memory checks are skipped as "no answer" (a new note goes into the vault, a duplicate is not detected, a dream's op needing a check is dropped, a re-sort leaves the note alone, the hearsay pre-check fails open to its hourly cap, a review's remove waits for the owner's yes). One owner can never use up what everyone else's checks need; memory as a whole stops at `judgeShare` of the site's `dailyLimit` |
+| `judgePerOwnerDay` | 300 (1–1 000 000) | The site's judgement model is asked at most this many times a site day on behalf of one owner's memory (sorting, the duplicate test, the faithful check, the hearsay pre-check, whether the owner asked, the persona aid's sentences — which stop at half of it, so that sorting keeps priority; `memory_judge_usage`, counted as `judge_usage` is): past it that owner's memory checks are skipped as "no answer" (a new note goes into the vault, a duplicate is not detected, a dream's op needing a check is dropped, a re-sort leaves the note alone, the hearsay pre-check fails open to its hourly cap, a review's remove waits for the owner's yes). One owner can never use up what everyone else's checks need; memory as a whole stops at `judgeShare` of the site's `dailyLimit` |
 | `judgeShare` | 0.5 (0–1) | Memory's judgement requests (all owners together) are held to this share of the site's judge `dailyLimit`: once the site's judgements of the day (`judge_usage`) have reached it, every memory check is skipped as "no answer", each caller as it does at `judgePerOwnerDay` — so memory never uses up what unasked replies need |
 | `explicitAt` | 0.7 (above 0, up to 1) | In the owner's own conversation a review's `remove` is applied at once only when the judgement model is at least this sure the owner's words in the review's window asked to forget or delete something they had told before (An Agent's memory, *In the owner's own conversation memory asks as little as it can*); below it, or with no answer, it waits for the owner's yes. Asked whatever the words (no list decides it); a `lock` is never asked about. 0.7 as calibrated on the real judgement model over the 297 windows of `calibration/memory-explicit.jsonl`, every one asked as production asks it (`scripts/calibrate-memory.mjs --mode explicit`): at 0.7 no window that did not ask passes, and 3 of the 98 that did are missed (a card each). 0 is refused: every answer would be a yes |
+| `personaFactAt` | 0.4 (0–1) | The persona aid (Agent social, `POST /api/agents/:id/persona-facts/:seq`): a sentence of a persona the judgement model is at least this sure tells a stranger a fact of the owner's or another real person's life is a candidate for a card. 0.4 as calibrated on the real judgement model over the 200 sentences of `calibration/persona-facts.jsonl` (`scripts/calibrate-memory.mjs --mode persona`): no sentence about the Agent itself or how the owner wants to be answered scored above 0.26, no fact below 0.53; at 0.3 to 0.5 none on the wrong side |
 | `mergeAuto` | `"on"` (`"off"`, `"on"`) | What a review does with a `merge` op (the notes it names are one thing; ids only) in the owner's own conversation: `"on"` joins the notes in their own words (`joinNotes`; nothing is asked) and applies the joined note at once as a dream's merge (with 先问我再记: a card); `"off"` ignores the op. A replace and removes are never a merge, whatever this says. `"observe"` and the setting `reviewMergeAt` are gone (2026-11-21): a configuration still naming them is refused at start-up, as any unknown key or value is |
 | `freeDailyPoints` | 20 (0–1 000 000, whole points) | The memory allowance the site pays per owner and site day for memory calls on a site model (Metering, "The memory allowance"); used up, those calls are not made until the next site day; 0 turns site-paid memory off (memory then works only for an owner who chose a model of their own provider). Never the owner's free allowance or balance |
 | `changesSweepMs` | 3 600 000 (0, or 60 000–86 400 000) | How often the record of memory changes is swept (Memory changes, below): its own timer, not `SWEEP_INTERVAL_MINUTES`; 0: no timer (`attachments:sweep` still runs it by hand). Whispers are expired and cleaned on the same timer (Whispers): 0 stops that too. The test harness sets 0 |
@@ -5372,8 +5382,8 @@ option answered otherwise counts as unanswered. One attempt per channel, in orde
 and without progress), its answer at most 64 KiB; any failure — a status, the network, the time, the body, the key's
 variable unset at that moment — goes on to the next channel, and after the last the call has failed: `JudgeError`, whose
 `reason` says coarsely why the last channel tried gave no answer — `auth` (401 or 403), `status` (any other status but
-200), `timeout`, `oversize`, `shape` (not `{"answers": {…}}`), `key_unset`, `network` (anything else: the connection, the
-address, no place among the calls in flight). The caller giving up (its signal) is its own abort, never a `JudgeError`,
+200), `timeout`, `oversize`, `shape` (not `{"answers": {…}}`), `key_unset`, `busy` (no place among the calls in flight:
+nothing was sent, and a moment later there may be one), `network` (anything else: the connection, the address). The caller giving up (its signal) is its own abort, never a `JudgeError`,
 and no further channel is tried. It goes through the address guard (Model providers) with slots of its own: at most 32
 judgement calls in flight in the process (one more fails at once). A choice question with no option or more than 254 is
 not sent, nor a question whose key was asked already (the first is); the questions are sent in an object with no
@@ -5421,9 +5431,9 @@ at `info`, so the two `debug` lines show only when the level is lowered.
   should practically never appear — it guards against the judgement misbehaving, so look at what is being picked;
   `hushed` counts mild complaints about the very Agent picked.
 - `{ "metric": "judge_failed", "reason", "conversationId" }` (info): no channel answered; `reason` is the client's
-  (`JudgeError.reason`: `auth`, `status`, `timeout`, `oversize`, `shape`, `key_unset`, `network`; `timeout` too when
+  (`JudgeError.reason`: `auth`, `status`, `timeout`, `oversize`, `shape`, `key_unset`, `busy`, `network`; `timeout` too when
   all the channels' time together ran out). `auth`: a key is wrong; `timeout`: the upstream is slow (`timeoutMs`);
-  `network`: down, or a channel's address refused; `shape`/`oversize`: it answers in another protocol.
+  `busy`: the process had its 32 judgement calls in flight; `network`: down, or a channel's address refused; `shape`/`oversize`: it answers in another protocol.
 - `{ "metric": "judge_partial", "conversationId" }` (info): an answer without the pick, missing one of its options, or
   whose probabilities do not add up to about 1 — the upstream answers in another shape than the client's.
 - `{ "metric": "judge_capped", "scope": "group" | "sender", "conversationId", "senderId"? }` (info), once an hour for each
@@ -5753,7 +5763,7 @@ container `node dist/cli.js memory:stats --days 7` (`npm run memory:stats`, `mem
 | `dream_failed` | a dream or nap job had a room whose call failed (one of the day's three tries; a call the memory allowance refused is no failure and no try: `memory_refused_allowance`, and the owner's dreams wait for the next site day) |
 | `dream_merge`, `dream_rewrite`, `dream_split`, `dream_lock` | the model's op was applied (not a pending card's, not a language conversion's) |
 | `dream_resort_locked` | a new open note locked again by the dream's re-sort (not by an op of the model) |
-| `judge_memory_call_sort`, `_same`, `_faithful`, `_precheck`, `_explicit` | the judgement model was asked, by purpose (after the owner's and the site's limits let it) |
+| `judge_memory_call_sort`, `_same`, `_faithful`, `_precheck`, `_explicit`, `_persona` | the judgement model was asked, by purpose (after the owner's and the site's limits let it; `_persona`: a sentence of a persona, by the persona aid) |
 | `explicit_asked` | a review's remove would otherwise wait, and the judgement was to be asked whether the owner asked to forget: one per request, whatever the owner's words |
 | `explicit_yes`, `explicit_no`, `explicit_no_answer` | what came of the question counted in `explicit_asked`: at or above `explicitAt` (applied at once), below it (a card), or no answer at all — no judge, an error, the owner's allowance or memory's share of the day (a card) |
 | `judge_memory_skipped_share` | a listening-only judgement was skipped at `listenShare` of the day's limit |
