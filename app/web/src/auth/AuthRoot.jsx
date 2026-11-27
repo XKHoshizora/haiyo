@@ -1,6 +1,6 @@
 import React, { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as routes from "../api/routes.js";
-import { bumpSessionEpoch, setTermsRequiredHandler, setUnauthenticatedHandler } from "../api/http.js";
+import { bumpSessionEpoch, setAccount, setAccountChangedHandler, setTermsRequiredHandler, setUnauthenticatedHandler } from "../api/http.js";
 import { createDataLayer } from "../data/store.jsx";
 import { ChunkBoundary } from "../ui/ChunkBoundary.jsx";
 import { AcceptTerms, Forgot, Loading, LoadFailed, Register, ResetPassword, SignIn, Verify } from "./screens.jsx";
@@ -28,6 +28,9 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
   const location = useLocation();
   const route = useMemo(() => parseRoute(location), [location]);
   const [box, setBox] = useState(() => ({ layer: createLayer(), id: 0 }));
+  /** The layer running now, for the handlers that retire it before anything else happens. */
+  const boxRef = useRef(box);
+  boxRef.current = box;
   const [session, setSession] = useState({ status: "loading", expired: false });
   const accountId = useRef(null);
   const requested = useRef(false);
@@ -38,22 +41,28 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
     // The service closes our socket with 4001 on a deliberate sign-out too; that is not an expiry.
     const wasExpired = expired && !signingOut.current;
     bumpSessionEpoch();
+    setAccount(null);
     pushSessionEnded(); // (In the iOS shell: the badge goes; a no-op in a browser.)
     forgetDrafts(); // (What was typed in a form, an API key among it, does not outlive the session: gone at sign-out, not at the next shell.)
     setSession((s) => (s.status === "out" ? s : { status: "out", expired: wasExpired && s.status === "in" }));
   }, []);
 
   const confirm = useCallback(
-    (me) => {
+    (me, { fresh = false } = {}) => {
       const another = accountId.current !== null && accountId.current !== me.id;
+      // A new session epoch first: an answer of the session before that lands from now on (a 401 included) is about that session.
+      bumpSessionEpoch();
       accountId.current = me.id;
-      if (another) {
-        // Nothing of the account before is kept: its layer (the old one is stopped as the new one starts), what was typed in its forms.
-        forgetDrafts();
+      // Every request from now on names this account (http.js `setAccount`): the service answers none for another.
+      setAccount(me.id);
+      if (another || fresh) {
+        // Nothing of the account before is kept: its layer (retired at once: nothing more of it is applied, it signs nobody out; stopped
+        // as the new one starts), what was typed in its forms.
+        boxRef.current.layer.retire?.();
+        if (another) forgetDrafts();
         const layer = createLayer();
         setBox((b) => ({ layer, id: b.id + 1 }));
       }
-      bumpSessionEpoch();
       // An account that has not accepted the documents in force (GET /api/me `termsAccepted`) is asked first; until then the
       // app is not shown and its data layer does not run.
       // Only while the site requires them (`termsRequired`; false while the texts are drafts: nobody is asked).
@@ -77,6 +86,32 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
     setUnauthenticatedHandler(() => end(true));
     return () => setUnauthenticatedHandler(null);
   }, [end]);
+
+  // A request the service refused for the account it named (409 account_changed: someone else signed in in this browser since — the
+  // memory settings' GET /api/me among them): the layer running is retired at once, then who is signed in is read (naming no account)
+  // and confirmed, as a sign-in confirms one: their own layer, everything bound to the account mounted again (T2 fix 3, S1). One reading
+  // at a time; the refused requests never settle (http.js).
+  const checkingAccount = useRef(false);
+  useEffect(() => {
+    setAccountChangedHandler(() => {
+      if (checkingAccount.current) return;
+      checkingAccount.current = true;
+      boxRef.current.layer.retire?.();
+      bumpSessionEpoch();
+      api.getMe({ anyAccount: true }).then(
+        (me) => {
+          checkingAccount.current = false;
+          confirm(me, { fresh: true });
+        },
+        (err) => {
+          checkingAccount.current = false;
+          if (err?.status === 401) end(false);
+          else setSession({ status: "failed", expired: false });
+        },
+      );
+    });
+    return () => setAccountChangedHandler(null);
+  }, [api, confirm, end]);
 
   // The service refuses every signed-in request until the documents in force are accepted (403 terms_required): a tab that
   // was open when a new version came in asks too. Its data layer stops until the question is answered.

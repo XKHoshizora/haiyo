@@ -18,6 +18,7 @@ export type ErrorCode =
   | "proactive_unavailable"
   | "busy_run"
   | "nothing_to_retry"
+  | "account_changed"
   | "provider_in_use"
   | "address_not_allowed"
   | "provider_rejected"

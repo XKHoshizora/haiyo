@@ -42,6 +42,11 @@ export async function requirePrincipal(req: FastifyRequest, { beforeTerms = fals
   );
   const row = rows[0];
   if (!row) throw new AppError(401, "unauthenticated");
+  // The account the page names (`X-Account`: the web names the account its data layer runs for): a request for another account than
+  // this session's — someone else signed in in this browser since — is answered with nothing of this one's and does nothing as it
+  // (T2 fix 3, S1). Checked here, where every signed-in route reads its session, before any of the route's work.
+  const named = req.headers["x-account"];
+  if (typeof named === "string" && named !== row.id) throw new AppError(409, "account_changed");
   if (!row.accepted && !beforeTerms && req.server.deps.config.legal.required) throw new AppError(403, "terms_required");
   return {
     id: row.id,

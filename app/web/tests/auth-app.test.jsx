@@ -3,11 +3,12 @@ import React from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ApiError, bumpSessionEpoch, request, setUnauthenticatedHandler } from "../src/api/http.js";
+import { deferred, fakeTimers, fakeTransport, settle, syncOf } from "./fixtures.js";
 import { AuthRoot, useSession } from "../src/auth/AuthRoot.jsx";
 import { clearResetToken, takeReturn } from "../src/auth/router.js";
 import { LEGAL_VERSIONS } from "../src/legal/versions.js";
 import { draftKeys, peekDraft, saveDraft } from "../src/data/drafts.js";
-import { StoreProvider, emptyState } from "../src/data/store.jsx";
+import { StoreProvider, createDataLayer, emptyState } from "../src/data/store.jsx";
 import { SettingsList, SettingsMain } from "../src/pages/Settings.jsx";
 import { PHONE_QUERY } from "../src/ui/pointer.js";
 
@@ -28,6 +29,7 @@ function fakeLayer() {
   return {
     start: vi.fn(),
     stop: vi.fn(),
+    retire: vi.fn(),
     onSignedOut: (fn) => {
       handlers.add(fn);
       return () => handlers.delete(fn);
@@ -213,7 +215,7 @@ describe("sign-in", () => {
     await screen.findByTestId("app");
     expect(api.signIn).toHaveBeenCalledWith({ email: "ann@x.com", password: "correct horse", callbackURL: "/verify" });
     expect(place()).toBe("/");
-    expect(layers[0].start).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(layers[0].start).toHaveBeenCalledTimes(1));
   });
 
   it("a link to a page of the app, opened signed out, is that page after signing in (not the list)", async () => {
@@ -456,7 +458,8 @@ describe("a site that does not require the terms yet (LEGAL off: GET /api/site a
     mount(fakeApi({ getMe: vi.fn(async () => ({ ...ANN, termsRequired: false, termsAccepted: false })) }));
     await screen.findByTestId("app");
     expect(screen.queryByRole("heading", { name: "请确认条款" })).toBeNull();
-    expect(layers[0].start).toHaveBeenCalledTimes(1);
+    // (The layer starts in an effect, which may run a moment after the app is on screen: `closeWith4001`.)
+    await waitFor(() => expect(layers[0].start).toHaveBeenCalledTimes(1));
   });
 
   it("a site that requires them says so, and the boxes are there", async () => {
@@ -498,7 +501,7 @@ describe("an account asked to accept again (GET /api/me termsAccepted false)", (
     submit("同意并继续");
     await screen.findByTestId("app");
     expect(api.acceptTerms).toHaveBeenCalledWith(ACCEPTANCE);
-    expect(layers[0].start).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(layers[0].start).toHaveBeenCalledTimes(1));
   });
 
   it("a refusal is shown on the form and the app stays closed", async () => {
@@ -913,6 +916,79 @@ describe("session lifecycle", () => {
     expect(layers).toHaveLength(2);
     expect(layers[1].start.mock.calls[0][0]).toMatchObject({ accountId: BO.id });
     expect(peekDraft("provider:new")).toBeNull();
+  });
+
+  it("an answer for another account anywhere (409 account_changed: the memory settings' GET /api/me among them) retires the layer at once and confirms who is signed in: their own layer, the app mounted again (T2 fix 3, S1)", async () => {
+    const getMe = vi.fn().mockResolvedValueOnce(ANN).mockResolvedValueOnce(BO);
+    mount(fakeApi({ getMe }));
+    await screen.findByTestId("app");
+    await waitFor(() => expect(layers[0].start).toHaveBeenCalled());
+    // The layer's own request, as the browser now sends someone else's cookie: the service refuses it for the account it names.
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: "account_changed" }), { status: 409, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      let settled = false;
+      request("GET", "/api/me").then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      await waitFor(() => expect(screen.getByTestId("app").dataset.key).toBe("1"));
+      expect(fetchMock.mock.calls[0][1].headers["X-Account"]).toBe(ANN.id);
+      // Retired before who is signed in was asked (nothing of it is applied, nobody is signed out by it from then on).
+      expect(layers[0].retire.mock.invocationCallOrder[0]).toBeLessThan(getMe.mock.invocationCallOrder[1]);
+      expect(getMe).toHaveBeenLastCalledWith({ anyAccount: true });
+      expect(layers[1].start.mock.calls[0][0]).toMatchObject({ accountId: BO.id });
+      expect(settled).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("with real data layers: A's layer hears a sync for B, B gets a layer of its own whose catalogue is asked for, and A's late 401 signs nobody out (T2 fix 3, S1)", async () => {
+    let as = ANN.id;
+    const transports = [];
+    const clocks = [];
+    const pendingMe = deferred();
+    const realLayer = () => {
+      const t = fakeTransport({ sync: () => ({ ...syncOf([]), me: as === ANN.id ? ANN : BO }) });
+      const timers = fakeTimers();
+      transports.push(t);
+      clocks.push(timers);
+      return createDataLayer({ transport: t, api: { getMe: () => pendingMe.promise }, timers, random: () => 0.5 });
+    };
+    const made = [];
+    render(
+      <AuthRoot api={fakeApi()} createLayer={() => (made.push(realLayer()), made.at(-1))}>
+        {(layer, key) => <div data-testid="app" data-key={key} />}
+      </AuthRoot>,
+    );
+    await screen.findByTestId("app");
+    await act(async () => {
+      await settle();
+    });
+    expect(made[0].getSnapshot().connection).toBe("live");
+    let settings;
+    act(() => {
+      settings = made[0].actions.loadMemorySettings();
+    });
+    as = BO.id;
+    await act(async () => {
+      transports[0].socket.drop(1006);
+      clocks[0].advance(clocks[0].delays()[0]);
+      await settle();
+    });
+    await waitFor(() => expect(screen.getByTestId("app").dataset.key).toBe("1"));
+    await act(async () => {
+      await settle();
+    });
+    expect(transports[1].agentLog).toContain("models");
+    await act(async () => {
+      pendingMe.reject(new ApiError(401, "unauthenticated"));
+      await settings;
+      await settle();
+    });
+    expect(screen.getByTestId("app").dataset.key).toBe("1");
+    expect(made[1].getSnapshot().connection).toBe("live");
   });
 
   it("the same account signing in again keeps the data layer (its drafts); another account gets a fresh one", async () => {

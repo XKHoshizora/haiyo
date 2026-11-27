@@ -29,7 +29,8 @@ export const resetPassword = (body) => request("POST", "/api/auth/reset-password
 export const getSite = () => request("GET", "/api/site");
 
 // ───────── me and principals
-export const getMe = () => request("GET", "/api/me");
+/** `{anyAccount: true}`: the sign-in gate's reading of who is signed in, which names no account (http.js `setAccount`). */
+export const getMe = (options) => request("GET", "/api/me", undefined, options);
 export const updateMe = (displayName) => request("PATCH", "/api/me", { displayName });
 /** My handle, once a year (409 handle_taken, 429 handle_change_too_soon with availableAt) → {id, handle, displayName, avatarVersion}. */
 export const updateHandle = (handle) => request("PATCH", "/api/me", { handle });

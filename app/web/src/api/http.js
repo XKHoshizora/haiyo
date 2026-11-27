@@ -28,7 +28,43 @@ export class ApiError extends Error {
 const AUTH_PREFIX = "/api/auth/";
 let onUnauthenticated = null;
 let onTermsRequired = null;
+let onAccountChanged = null;
 let sessionEpoch = 0;
+/** The account this page runs for (the sign-in gate's), named on every request (`X-Account`); null: none yet, or signed out. */
+let account = null;
+/** The header that names the account a request is made for (app/service/README.md, Sessions). */
+export const ACCOUNT_HEADER = "X-Account";
+
+/**
+ * The account the page's data layer runs for (AuthRoot `confirm`), or null (signed out). Every request names it: the service answers a
+ * request for another account than its session's — someone else signed in in this browser since — with 409 `account_changed` and
+ * nothing of that other account's (T2 fix 3, S1). Such an answer reaches the handler (`setAccountChangedHandler`), and the request
+ * never settles: nothing of it is applied anywhere, and no error is shown (the page is being given to the account that is signed in).
+ */
+export function setAccount(id) {
+  account = typeof id === "string" ? id : null;
+}
+
+/** Registers the function called for a 409 `account_changed` of this session (see `setAccount`). Pass null to clear. */
+export function setAccountChangedHandler(fn) {
+  onAccountChanged = typeof fn === "function" ? fn : null;
+}
+
+/** The headers naming the account (none when no account is set, or `anyAccount`: the sign-in gate's own reading of who is signed in). */
+const accountHeaders = (options) => (account !== null && !options?.anyAccount ? { [ACCOUNT_HEADER]: account } : {});
+
+/** A 409 `account_changed`: the handler is told (once per answer, of this session only), and the caller's promise never settles. */
+function accountChanged(epoch) {
+  if (epoch === sessionEpoch && onAccountChanged) {
+    try {
+      onAccountChanged();
+    } catch {
+      /* the handler must not throw into the request */
+    }
+  }
+  return new Promise(() => {});
+}
+const isAccountChanged = (status, data) => status === 409 && data?.error === "account_changed";
 
 /**
  * Registers the function called for every 403 `terms_required` of this session (the service's answer to any signed-in
@@ -83,11 +119,12 @@ const cut = () => {
  * @param {string} method
  * @param {string} path absolute path starting with /api
  * @param {unknown} [body] sent as JSON when given; no body and no content type otherwise
- * @param {{signal?: AbortSignal}} [options] `signal` ends the request early (the caller that aborts is not waiting for it any more)
+ * @param {{signal?: AbortSignal, anyAccount?: boolean}} [options] `signal` ends the request early (the caller that aborts is not waiting
+ *   for it any more); `anyAccount` names no account (`setAccount`): only the sign-in gate's reading of who is signed in
  * @returns the parsed JSON body (null when empty)
  */
 export async function request(method, path, body, options) {
-  const init = { method, credentials: "same-origin", headers: { Accept: "application/json" } };
+  const init = { method, credentials: "same-origin", headers: { Accept: "application/json", ...accountHeaders(options) } };
   if (options?.signal) init.signal = options.signal;
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
@@ -104,6 +141,7 @@ export async function request(method, path, body, options) {
 
   const data = await readJson(res);
   if (res.ok) return data;
+  if (isAccountChanged(res.status, data)) return accountChanged(epoch);
 
   throw apiErrorOf(res.status, data, path, epoch);
 }
@@ -120,12 +158,13 @@ export async function requestBytes(method, path, body, contentType) {
   const epoch = sessionEpoch;
   let res;
   try {
-    res = await fetch(path, { method, credentials: "same-origin", headers: { Accept: "application/json", "Content-Type": contentType }, body });
+    res = await fetch(path, { method, credentials: "same-origin", headers: { Accept: "application/json", "Content-Type": contentType, ...accountHeaders() }, body });
   } catch {
     return cut();
   }
   const data = await readJson(res);
   if (res.ok) return data;
+  if (isAccountChanged(res.status, data)) return accountChanged(epoch);
   throw apiErrorOf(res.status, data, path, epoch);
 }
 
@@ -185,12 +224,14 @@ export function upload(path, form, { onProgress, signal } = {}) {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", path);
     xhr.setRequestHeader("Accept", "application/json");
+    for (const [name, value] of Object.entries(accountHeaders())) xhr.setRequestHeader(name, value);
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) onProgress?.(Math.min(1, event.loaded / event.total));
     };
     xhr.onload = () => {
       const data = parseJson(xhr.responseText);
       if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else if (isAccountChanged(xhr.status, data)) accountChanged(epoch);
       else reject(apiErrorOf(xhr.status, data, path, epoch));
     };
     xhr.onerror = () => reject(new ApiError(0, "network_error"));

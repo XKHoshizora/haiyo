@@ -84,6 +84,8 @@ export function createDataLayer({
   let engine = null;
   let epoch = 0;
   let notified = false;
+  /** Retired (`retire`): the account changed under it. Nothing more is applied to it, and it tells nobody anything any more. */
+  let dead = false;
   const listeners = new Set();
   const signedOutListeners = new Set();
   /** Told the account a sync showed when it is not the one this layer runs for (`start({ accountId })`). */
@@ -95,7 +97,7 @@ export function createDataLayer({
   };
   const getModel = () => model;
   const setModel = (next) => {
-    if (next === model) return;
+    if (dead || next === model) return;
     model = next;
     emit();
   };
@@ -109,7 +111,7 @@ export function createDataLayer({
 
   function notifySignedOut() {
     engine = null;
-    if (notified) return;
+    if (notified || dead) return;
     notified = true;
     setConnection("signedOut");
     for (const fn of [...signedOutListeners]) {
@@ -119,6 +121,22 @@ export function createDataLayer({
         /* a listener must not stop the others */
       }
     }
+  }
+
+  /**
+   * The account changed under this layer (a sync answered for another, or the service refused a request for this one: AuthRoot):
+   * synchronously, before anyone is told, its requests' epoch moves on and the engine stops, so an answer of the old account that lands
+   * later — a 401 included — is applied nowhere and signs nobody out (T2 fix 3, S1). Its listeners are not called again.
+   */
+  function retire() {
+    if (dead) return;
+    dead = true;
+    epoch += 1;
+    forgetRequests();
+    forgetOthersUse(actions);
+    const running = engine;
+    engine = null;
+    running?.stop();
   }
 
   const { actions, reset: forgetRequests } = createActions({
@@ -158,11 +176,12 @@ export function createDataLayer({
      * this layer runs for (the sign-in gate's); a sync for any other is never applied here (`onAccountChanged`).
      */
     start({ paused = false, accountId = null } = {}) {
-      if (engine) return;
+      if (engine || dead) return;
       notified = false;
       if (model.synced) model = resetKeepingDrafts(model); // signed out without stop(): start from a first load
       const onAccountChanged = (me) => {
-        engine = null;
+        if (dead) return;
+        retire();
         for (const fn of [...accountListeners]) {
           try {
             fn(me);
@@ -173,6 +192,7 @@ export function createDataLayer({
       };
       engine = startSync(tx, { getModel, setModel, timers, now, random, onSignedOut: notifySignedOut, onStatus: setConnection, paused, accountId, onAccountChanged });
     },
+    retire,
     /** The iOS shell's `haiyo:pause` / `haiyo:resume` (shell/useShell.js): the socket is let go, and comes back by the ordinary reconnect. */
     pause: () => engine?.pause(),
     resume: () => engine?.resume(),

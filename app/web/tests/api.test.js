@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, request, setUnauthenticatedHandler } from "../src/api/http.js";
+import { ApiError, request, setAccount, setAccountChangedHandler, setUnauthenticatedHandler } from "../src/api/http.js";
 import * as routes from "../src/api/routes.js";
 
 const ID = "0b9c1c6e-0000-4000-8000-000000000001";
@@ -228,6 +228,47 @@ describe("401 handler", () => {
     expect(handler).not.toHaveBeenCalled();
     fetchMock.mockResolvedValue(reply(401, { error: "unauthenticated" }));
     await expect(request("GET", "/api/me")).rejects.toMatchObject({ code: "unauthenticated" });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the account a request is made for (T2 fix 3, S1)", () => {
+  afterEach(() => {
+    setAccount(null);
+    setAccountChangedHandler(null);
+  });
+
+  it("is named on every request once the sign-in gate set it (X-Account), never on the gate's own reading of who is signed in", async () => {
+    await routes.getSync();
+    expect(fetchMock.mock.calls[0][1].headers["X-Account"]).toBeUndefined();
+    setAccount("p-ann");
+    await routes.getSync();
+    await routes.catchUp({ [ID]: 4 });
+    await routes.uploadAgentAvatar(ID, new File(["png"], "a.png", { type: "image/png" }));
+    expect(fetchMock.mock.calls.slice(1).map(([, init]) => init.headers["X-Account"])).toEqual(["p-ann", "p-ann", "p-ann"]);
+    await routes.getMe({ anyAccount: true });
+    expect(fetchMock.mock.calls[4][1].headers["X-Account"]).toBeUndefined();
+    setAccount(null);
+    await routes.getSync();
+    expect(fetchMock.mock.calls[5][1].headers["X-Account"]).toBeUndefined();
+  });
+
+  it("an answer for another account (409 account_changed) reaches the handler and never settles: nothing of it is returned, no error either", async () => {
+    const handler = vi.fn();
+    setAccount("p-ann");
+    setAccountChangedHandler(handler);
+    fetchMock.mockResolvedValue(reply(409, { error: "account_changed" }));
+    let settled = false;
+    routes.catchUp({ [ID]: 4 }).then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settled).toBe(false);
+    // Any other 409 is an ordinary error.
+    fetchMock.mockResolvedValue(reply(409, { error: "busy_run" }));
+    await expect(routes.getSync()).rejects.toMatchObject({ status: 409, code: "busy_run" });
     expect(handler).toHaveBeenCalledTimes(1);
   });
 });

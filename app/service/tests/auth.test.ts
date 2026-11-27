@@ -681,3 +681,29 @@ describe("accounts", () => {
     expect(ratio).toBeLessThan(3);
   });
 });
+
+describe("the account a request names (X-Account; T2 fix 3, S1)", () => {
+  const { app } = useApp();
+  type Who = { cookie: string; id: string };
+  const as = (who: Who, named: string, method: "GET" | "PATCH" | "POST", url: string, body?: object) =>
+    app.inject({ method, url, headers: { cookie: who.cookie, "x-account": named }, ...(body ? { payload: body } : {}) });
+
+  test("a request naming another account than its session's gets nothing of this one's: 409 account_changed, nothing read or written; its own named, or none, is answered", async () => {
+    const [ann, bo] = [await signUp(app, "acct_ann"), await signUp(app, "acct_bo")];
+    // bo's cookie, a page that runs for ann: nothing is answered for bo, and nothing is done as bo.
+    for (const [method, url, body] of [
+      ["GET", "/api/me"],
+      ["GET", "/api/sync"],
+      ["POST", "/api/sync/catchup", { positions: {} }],
+      ["POST", "/api/ws-ticket"],
+      ["PATCH", "/api/me", { displayName: "不是我" }],
+    ] as const) {
+      const res = await as(bo, ann.id, method, url, body);
+      expect([url, res.statusCode, res.json()]).toEqual([url, 409, { error: "account_changed" }]);
+    }
+    const mine = await api(app, bo, "GET", "/api/me");
+    expect(mine.status).toBe(200);
+    expect(mine.json.displayName).not.toBe("不是我");
+    expect((await as(bo, bo.id, "GET", "/api/me")).statusCode).toBe(200);
+  });
+});

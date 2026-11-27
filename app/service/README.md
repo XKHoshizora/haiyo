@@ -579,7 +579,11 @@ too — and holds the reply worker's loop until the truncate has ended; the hub'
 - **Session.** Sign-in sets the `HttpOnly`, `SameSite=Lax` session cookie `better-auth.session_token`
   (`Secure` and named `__Secure-better-auth.session_token` when `APP_ORIGIN` is https). Routes marked *Session: required* answer 401
   `{"error":"unauthenticated"}` without a valid session of a principal whose e-mail is verified. The
-  acting principal always comes from the session: no body names a sender, actor or owner.
+  acting principal always comes from the session: no body names a sender, actor or owner. A request may name the account it is
+  made for (`X-Account: <principal id>`; the web names the account its data layer runs for on every request): one naming another
+  account than its session's — someone else signed in in this browser since — is 409 `{"error":"account_changed"}`, nothing read
+  or written, checked where every such route reads its session (`src/session.ts` `requirePrincipal`). The web then reads who is
+  signed in (naming no account) and gives that account a page of its own.
 - **Cross-site requests.** Any `POST`, `PUT`, `PATCH` or `DELETE`, whatever its path, whose `Origin` header
   is present and is not exactly `APP_ORIGIN` (byte for byte: no other case, port, trailing slash, `null` or
   list) is refused with 403 `{"error":"forbidden"}` before anything else runs (`src/app.ts`). Requests
@@ -616,6 +620,7 @@ Every error body is `{"error": "<snake_case_code>"}`, sometimes with details nex
 | 404 | `not_found` | Does not exist, or is not yours to see (identical answers) |
 | 409 | `agent_deleted` | Editing, pausing, resuming or changing the avatar of a deleted Agent, retrying its reply, or confirming or discarding its persona proposals |
 | 409 | `agent_paused` | Retrying the reply of a paused Agent |
+| 409 | `account_changed` | Any route with *Session: required*, when the request names another account (`X-Account`) than its session's |
 | 409 | `busy_run` | Retrying while a reply of that Agent is already queued or running |
 | 409 | `nothing_to_retry` | Retrying a failure nothing of which is left to answer: each of its calls refused since, or a later reply took it on (the web closes the failure quietly) |
 | 409 | `model_gone` | Retrying while the Agent's model is not there to call (its `modelUsable` is false); also a run's error (Run): its model was not there to call, so no call was made |
