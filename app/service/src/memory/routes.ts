@@ -173,11 +173,12 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
     // The owner's own choice is final; otherwise their setting decides, `auto` by the judge (sort.ts: vault when it cannot answer).
     const sorted =
       body.vault === undefined ? await sortNote(sortDeps(log, ownerId), text, room.kind, await getNewNotes(db, ownerId)) : { vault: body.vault, unsure: false };
-    const id = await db.tx(async (t) => {
+    // The answer is the row this transaction wrote, read in it (fix round 1, F2): nothing done after the commit can turn it into a 404.
+    return db.tx(async (t) => {
       await lockRoom(t, room);
       const full = noRoomFor(room, await listRoom(t, room), text);
       if (full) throw full;
-      return insertNote(t, room, {
+      const id = await insertNote(t, room, {
         text,
         vault: sorted.vault,
         vaultBy: body.vault === undefined ? "auto" : "owner",
@@ -185,8 +186,8 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
         origin: "owner",
         originConversationId: null,
       });
+      return noteOf(t, room, id);
     });
-    return noteOf(db, room, id);
   }
 
   async function edit(room: Room, ownerId: string, noteId: string, body: { text?: string; vault?: boolean }, log: FastifyBaseLogger) {
@@ -200,7 +201,9 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
     // A text change alone re-sorts, and only a note outside the vault that the owner never chose for: towards the vault.
     const resort = body.vault === undefined && text !== undefined && text !== before.text && !before.vault && before.vaultBy === "auto";
     const sorted = resort ? await sortNote(sortDeps(log, ownerId), text, room.kind, await getNewNotes(db, ownerId)) : null;
-    await db.tx(async (t) => {
+    // What it actually changed is decided under the lock, from the note as it is there (fix round 1, F1): a move another write made first
+    // (以后别说, another tab) is not this one's to count. The answer is the row as this transaction left it (F2).
+    const done = await db.tx(async (t) => {
       await lockRoom(t, room);
       const notes = await listRoom(t, room);
       const note = notes.find((n) => n.id === noteId);
@@ -216,12 +219,18 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
       // A text the owner typed may hold anything, so the note no longer began only where it did (origin.ts).
       const typed = text !== undefined && text !== note.text ? { text, originConversationId: keptOrigin(note.originConversationId, { from: "owner" }) } : {};
       if (changed) await updateNote(t, room, noteId, { ...patch, ...typed });
+      return {
+        view: await noteOf(t, room, noteId),
+        unlocked: body.vault === false && note.vault,
+        locked: body.vault === true && !note.vault,
+        editedAuto: typed.text !== undefined && note.origin === "review",
+      };
     });
-    // What the owner did to what the model had put there (`stats.ts`): a change of mind about it.
-    if (body.vault === false && before.vault) count(db, "owner_unlocked");
-    if (body.vault === true && !before.vault) count(db, "owner_locked");
-    if (text !== undefined && text !== before.text && before.origin === "review") count(db, "owner_edited_auto_note");
-    return noteOf(db, room, noteId);
+    // What the owner did to what the model had put there (`stats.ts`): a change of mind about it, counted once it committed.
+    if (done.unlocked) count(db, "owner_unlocked");
+    if (done.locked) count(db, "owner_locked");
+    if (done.editedAuto) count(db, "owner_edited_auto_note");
+    return done.view;
   }
 
   /**
@@ -233,7 +242,7 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
    * (`social_note_vaulted_from_reply`, never `owner_locked`).
    */
   async function vaultFromReply(room: Room, ownerId: string, noteId: string, from: { conversationId: string; seq: number }, agentId: string | null) {
-    const outcome = await db.tx(async (t): Promise<"ok" | "changed" | "unknown"> => {
+    const outcome = await db.tx(async (t): Promise<z.infer<typeof noteView> | "changed" | "unknown"> => {
       await lockRoom(t, room);
       const shown = await t.query<{ version: string | null }>(
         `select (select s ->> 'version' from jsonb_array_elements(run.shown_notes) s where s ->> 'kind' = $4 and s ->> 'id' = $5 limit 1) as version
@@ -251,12 +260,13 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
       const now = (await listRoomExact(t, room)).find((e) => e.note.id === noteId);
       if (now === undefined || now.note.vault || now.updatedAt !== version) return "changed";
       await updateNote(t, room, noteId, { vault: true, vaultBy: "owner", unsure: false });
-      return "ok";
+      // The answer is the row as this transaction left it (fix round 1, F2), not a read after the lock is let go.
+      return noteOf(t, room, noteId);
     });
     if (outcome === "unknown") throw notFound();
     if (outcome === "changed") throw new AppError(409, "note_changed");
     count(db, "social_note_vaulted_from_reply");
-    return noteOf(db, room, noteId);
+    return outcome;
   }
 
   async function remove(room: Room, noteId: string): Promise<{ ok: true }> {
@@ -480,7 +490,8 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
       // The note points at the group the entry was heard in: that row is taken first, before the room and the hearsay (the lock
       // order; conversations/store.ts `lockConversationKeys`). An entry's group never changes, so it is read before the transaction.
       const where = await db.query<{ conversation_id: string }>("select conversation_id from agent_hearsay where id = $1 and agent_id = $2", [req.params.hearsayId, agent.id]);
-      const id = await db.tx(async (t) => {
+      // (The answer is the row this transaction wrote, read in it, as an add's is: fix round 1, F2.)
+      const made = await db.tx(async (t) => {
         await lockConversationKeys(t, where.rows.map((r) => r.conversation_id));
         await lockRoom(t, room);
         await lockHearsay(t, agent.id);
@@ -491,7 +502,7 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
         if (text === null) throw refused();
         const full = noRoomFor(room, await listRoom(t, room), text);
         if (full) throw full;
-        return insertNote(t, room, {
+        const id = await insertNote(t, room, {
           text,
           vault: true,
           vaultBy: "auto",
@@ -499,9 +510,10 @@ export function registerMemoryRoutes(app: FastifyInstance, { readLimit }: { read
           origin: "hearsay",
           originConversationId: heard.conversationId,
         });
+        return noteOf(t, room, id);
       });
       count(db, "hearsay_confirmed");
-      return reply.code(201).send(await noteOf(db, room, id));
+      return reply.code(201).send(made);
     },
   );
   // --- the changes a review made, as the owner may take them back or decide on them -----------------------------------

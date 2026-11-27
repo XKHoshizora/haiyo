@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { settled } from "../src/memory/stats.ts";
 import { exactTs } from "../src/memory/write.ts";
-import { api, signUp, type Actor } from "./helpers/actors.ts";
+import { api, signUp, type Actor, type ApiResult } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
 import { scriptedGateway } from "./helpers/models.ts";
@@ -345,9 +345,124 @@ describe("T1: what is said in a social conversation stays there (the isolation c
     // (Positive control: the owner's own words reached both.)
     expect(calls.every((c) => JSON.stringify(c).includes("OWN-LINE-1b"))).toBe(true);
     expect(JSON.stringify(calls)).not.toContain("CANARY-1b");
-    for (const table of ["whispers", "conversation_summaries", "memory_flags", "memory_changes", "memory_catchups", "agent_hearsay", "owner_notes", "agent_notes"]) {
+    // The tables that hold ids only are asked by id (fix round 1, F4): no row of the social conversation, in any of them. (Positive
+    // control: the review of the own conversation left its row in memory_review_state.)
+    for (const table of ["memory_review_state", "memory_flags", "memory_catchups", "conversation_summaries", "whispers", "memory_changes", "agent_hearsay"]) {
+      const found = await db.query(`select 1 from ${table} where conversation_id = $1 limit 1`, [w.conv]);
+      expect([table, found.rowCount]).toEqual([table, 0]);
+    }
+    expect((await db.query("select 1 from memory_review_state where agent_id = $1 and conversation_id = $2", [w.agent.id, w.agent.conversationId])).rowCount).toBe(1);
+    // And the tables that hold text hold none of what was said there.
+    for (const table of ["whispers", "conversation_summaries", "memory_changes", "agent_hearsay", "owner_notes", "agent_notes"]) {
       const found = await db.query(`select 1 from ${table} x where x::text like '%CANARY-1b%' limit 1`);
       expect([table, found.rowCount]).toEqual([table, 0]);
     }
+  });
+});
+
+/**
+ * Two writes of one note that meet at its room's lock (fix round 1, F1, F4): `first` and then `second` are sent while a third
+ * connection holds the lock, each seen waiting for it before the next is sent; Postgres grants an advisory lock's waiters in the
+ * order they came, so `first` takes it first once it is let go. Both answers.
+ */
+async function meetAtTheLock(room: string, first: () => Promise<ApiResult>, second: () => Promise<ApiResult>): Promise<[ApiResult, ApiResult]> {
+  const waiting = async (n: number) => {
+    for (let i = 0; i < 400; i++) {
+      const { rows } = await db.query<{ n: number }>("select count(*)::int as n from pg_locks where locktype = 'advisory' and not granted and database = (select oid from pg_database where datname = current_database())");
+      if (rows[0]!.n >= n) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error(`meetAtTheLock: ${n} waiter(s) never came`);
+  };
+  let answers: [ApiResult, ApiResult] | null = null;
+  await db.tx(async (t) => {
+    await t.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [room]);
+    const a = first();
+    await waiting(1);
+    const b = second();
+    await waiting(2);
+    answers = [a, b] as unknown as [ApiResult, ApiResult];
+  });
+  const [a, b] = answers!;
+  return [await a, await b];
+}
+
+describe("fix round 1: one move, one counter, decided under the lock (F1, F4)", () => {
+  it("以后别说 and the memory page's 放进保险箱 on one note at once: the first to the lock moves it, the other counts nothing for a move it did not make", async () => {
+    const w = await world();
+    const { seq, owner } = await answered(w);
+    const [locked, fromReply] = [await counted("owner_locked"), await counted("social_note_vaulted_from_reply")];
+    const [reply, page] = await meetAtTheLock(
+      `memory-room:owner:${w.owner.id}`,
+      () => vaultFromReply(w.owner, w, owner, { conversationId: w.conv, seq }),
+      () => api(app, w.owner, "PATCH", `/api/memory/notes/${owner.id}`, { vault: true }),
+    );
+    expect([reply.status, page.status]).toEqual([200, 200]);
+    expect((await db.query("select vault, vault_by from owner_notes where id = $1", [owner.id])).rows[0]).toEqual({ vault: true, vault_by: "owner" });
+    expect([await counted("social_note_vaulted_from_reply"), await counted("owner_locked")]).toEqual([fromReply + 1, locked]);
+  });
+
+  it("the memory page first: it counts its move, and 以后别说 is refused (409) and counts nothing", async () => {
+    const w = await world();
+    const { seq, owner } = await answered(w);
+    const [locked, fromReply] = [await counted("owner_locked"), await counted("social_note_vaulted_from_reply")];
+    const [page, reply] = await meetAtTheLock(
+      `memory-room:owner:${w.owner.id}`,
+      () => api(app, w.owner, "PATCH", `/api/memory/notes/${owner.id}`, { vault: true }),
+      () => vaultFromReply(w.owner, w, owner, { conversationId: w.conv, seq }),
+    );
+    expect([page.status, reply.status, reply.json.error]).toEqual([200, 409, "note_changed"]);
+    expect([await counted("social_note_vaulted_from_reply"), await counted("owner_locked")]).toEqual([fromReply, locked + 1]);
+  });
+
+  it("two 以后别说 on one note at once: one 200, one 409 note_changed, the counter +1", async () => {
+    const w = await world();
+    const { seq, self } = await answered(w);
+    const before = await counted("social_note_vaulted_from_reply");
+    const press = () => vaultFromReply(w.owner, w, self, { conversationId: w.conv, seq });
+    const [a, b] = await meetAtTheLock(`memory-room:self:${w.agent.id}`, press, press);
+    expect([a.status, b.status, b.json.error]).toEqual([200, 409, "note_changed"]);
+    expect(await counted("social_note_vaulted_from_reply")).toBe(before + 1);
+  });
+});
+
+describe("fix round 1: a 200 is built from the row its transaction wrote (F2)", () => {
+  /** Runs `work` while every transaction the app commits is followed at once, before the route goes on, by `after` on another connection. */
+  async function racedAfterCommit<T>(after: () => Promise<unknown>, work: () => Promise<T>): Promise<T> {
+    const real = app.deps.db.tx.bind(app.deps.db);
+    const spy = vi.spyOn(app.deps.db, "tx").mockImplementation((async (fn: never) => {
+      const result = await real(fn);
+      await after();
+      return result;
+    }) as typeof app.deps.db.tx);
+    try {
+      return await work();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it("以后别说, an edit and an add whose note is deleted the moment they commit still answer 200 with what they wrote", async () => {
+    const w = await world();
+    const { seq, owner, self } = await answered(w);
+    const reply = await racedAfterCommit(() => db.query("delete from owner_notes where id = $1", [owner.id]), () => vaultFromReply(w.owner, w, owner, { conversationId: w.conv, seq }));
+    expect([reply.status, reply.json.id, reply.json.vault]).toEqual([200, owner.id, true]);
+    const edited = await racedAfterCommit(() => db.query("delete from agent_notes where id = $1", [self.id]), () =>
+      api(app, w.owner, "PATCH", `/api/agents/${w.agent.id}/memory/notes/${self.id}`, { vault: true }),
+    );
+    expect([edited.status, edited.json.id, edited.json.vault]).toEqual([200, self.id, true]);
+    const added = await racedAfterCommit(() => db.query("delete from owner_notes where owner_id = $1", [w.owner.id]), () =>
+      api(app, w.owner, "POST", "/api/memory/notes", { text: "ADDED-1b 刚加的", vault: true }),
+    );
+    expect([added.status, added.json.text, added.json.vault]).toEqual([201, "ADDED-1b 刚加的", true]);
+    // (A heard thing taken as true becomes a note the same way.)
+    const heard = await db.query<{ id: string }>(
+      "insert into agent_hearsay (agent_id, conversation_id, speaker_id, speaker_name, text, said_at) values ($1, $2, $3, 'v', 'HEARD-1b 他下周搬家', now()) returning id",
+      [w.agent.id, w.agent.conversationId, w.v.id],
+    );
+    const confirmed = await racedAfterCommit(() => db.query("delete from owner_notes where owner_id = $1", [w.owner.id]), () =>
+      api(app, w.owner, "POST", `/api/agents/${w.agent.id}/memory/hearsay/${heard.rows[0]!.id}/confirm`),
+    );
+    expect([confirmed.status, confirmed.json.text, confirmed.json.origin]).toEqual([201, "HEARD-1b 他下周搬家", "hearsay"]);
   });
 });
