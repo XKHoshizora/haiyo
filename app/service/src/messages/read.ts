@@ -344,8 +344,9 @@ function toWire(
  * call of it from and why (`refused`: `call_refusals`, migration 077, its `sender_id`): a person's message for its sender, an
  * Agent's relay for the person behind it (limits redesign C-d) — in the order they were recorded, read in the same query by one
  * more join; nobody else is sent the key. An Agent's reply in a social conversation carries, for the owner of the Agent that sent it
- * alone, what its run could refer to of their notes (`shownNotes`, `shownNotesOf`; ring 1b): read in the same query by one more join
- * that looks only when the reader owns the sender, the texts in one more query; nobody else is sent the key or a note's text.
+ * alone, what its run could refer to of their notes (`shownNotes`, `shownNotesOf`; ring 1b): read in the same query by the same join of
+ * the posting run as `via` (it looks only when the reader owns the sender; `shownNotes` only in a social conversation), the texts in one
+ * more query; nobody else is sent the key or a note's text.
  * Every visibility decision goes through VISIBLE_JOIN, so an owner who left the group reads nothing of it; a fixed number
  * of queries however many readers and messages there are. `config`: the site models' labels, read now.
  */
@@ -363,30 +364,27 @@ export async function toWireForReaders(
     `select r.reader_id, m.id,
             coalesce(c.type = 'agent' or (c.type in ('group', 'agent_social') and sender.owner_id = r.reader_id), false) as with_reasoning,
             coalesce(c.type = 'agent' and sender.owner_id = r.reader_id, false) as with_queries,
-            via.source as via_source, via.model as via_model, via.reasoning as via_reasoning, via.points as via_points,
-            via.proactive as via_proactive, via.web as via_web, refusal.refused, noted.shown_notes
+            posting.source as via_source, posting.model as via_model, posting.reasoning as via_reasoning, posting.points as via_points,
+            posting.proactive as via_proactive, posting.web as via_web, refusal.refused, posting.shown_notes
        from unnest($1::uuid[]) as r (reader_id)
        cross join messages m ${visibleJoin("r.reader_id")}
        join conversations c on c.id = m.conversation_id
        left join principals sender on sender.id = m.sender_id
        left join lateral (
-         select run.source, run.model, run.reasoning, (u.free_micro + u.balance_micro)::text as points, run.lane = 'proactive' as proactive, u.web_searches as web
+         -- The run that posted this reply, looked up once and only for the owner of the Agent that sent it: what \`via\` says (no
+         -- usage record, or no model on the run: no \`via\`, toWireVia), and what a social reply could refer to (\`shownNotes\`).
+         select run.source, run.model, run.reasoning, run.lane = 'proactive' as proactive,
+                (u.free_micro + u.balance_micro)::text as points, u.web_searches as web,
+                case when c.type = 'agent_social' then run.shown_notes end as shown_notes
            from agent_runs run
-           join usage_records u on u.run_id = run.id
+           left join usage_records u on u.run_id = run.id
           where sender.owner_id = r.reader_id and m.kind = 'text' and ${postingRun("m", "run")} and m.client_txn = run.id::text
-            and run.source is not null and run.model is not null and run.reasoning is not null
-       ) via on true
+       ) posting on true
        left join lateral (
          select json_agg(json_build_object('agentId', cr.agent_id, 'reason', cr.reason) order by cr.created_at, cr.agent_id) as refused
            from call_refusals cr
           where cr.sender_id = r.reader_id and m.kind <> 'system' and cr.conversation_id = m.conversation_id and cr.seq = m.seq
        ) refusal on true
-       left join lateral (
-         select run.shown_notes
-           from agent_runs run
-          where c.type = 'agent_social' and sender.owner_id = r.reader_id and m.kind = 'text' and ${postingRun("m", "run")} and m.client_txn = run.id::text
-            and run.shown_notes is not null
-       ) noted on true
       where m.id = any($2::bigint[])`,
     [readers, msgs.map((m) => m.id)],
   );
