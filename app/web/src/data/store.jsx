@@ -193,6 +193,8 @@ export function createDataLayer({
       engine = startSync(tx, { getModel, setModel, timers, now, random, onSignedOut: notifySignedOut, onStatus: setConnection, paused, accountId, onAccountChanged });
     },
     retire,
+    /** Whether it was retired: such a layer is never started again (the sign-in gate makes a fresh one: T2 fix 4, U1). */
+    isRetired: () => dead,
     /** The iOS shell's `haiyo:pause` / `haiyo:resume` (shell/useShell.js): the socket is let go, and comes back by the ordinary reconnect. */
     pause: () => engine?.pause(),
     resume: () => engine?.resume(),

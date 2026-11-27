@@ -26,10 +26,14 @@ const EXPIRED_NOTICE = "登录已失效，请重新登录。";
 function fakeLayer() {
   const handlers = new Set();
   const accounts = new Set();
+  let retired = false;
   return {
     start: vi.fn(),
     stop: vi.fn(),
-    retire: vi.fn(),
+    retire: vi.fn(() => {
+      retired = true;
+    }),
+    isRetired: () => retired,
     onSignedOut: (fn) => {
       handlers.add(fn);
       return () => handlers.delete(fn);
@@ -916,6 +920,74 @@ describe("session lifecycle", () => {
     expect(layers).toHaveLength(2);
     expect(layers[1].start.mock.calls[0][0]).toMatchObject({ accountId: BO.id });
     expect(peekDraft("provider:new")).toBeNull();
+  });
+
+  /** AuthRoot over real data layers (fake transports whose sync answers for `me`), with `getMe` its reading of who is signed in. */
+  async function withRealLayers(getMe) {
+    const made = [];
+    const createReal = () => {
+      const layer = createDataLayer({ transport: fakeTransport({ sync: () => ({ ...syncOf([]), me: ANN }) }), api: {}, timers: fakeTimers(), random: () => 0.5 });
+      made.push(layer);
+      return layer;
+    };
+    render(
+      <AuthRoot api={fakeApi({ getMe })} createLayer={createReal}>
+        {(layer, key) => <div data-testid="app" data-key={key} />}
+      </AuthRoot>,
+    );
+    await screen.findByTestId("app");
+    await act(async () => {
+      await settle();
+    });
+    expect(made[0].getSnapshot().connection).toBe("live");
+    return made;
+  }
+  /** One of the layer's requests, refused by the service for the account it names (409 account_changed): it never settles. */
+  function refusedForTheAccount() {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "account_changed" }), { status: 409, headers: { "content-type": "application/json" } })));
+    request("GET", "/api/agents").catch(() => {});
+  }
+
+  it("a retired layer is never used again: 409, the gate shows it is loading, who is signed in reads 401, the same account signs in again — a fresh layer, live (T2 fix 4, U1)", async () => {
+    const reading = deferred();
+    const getMe = vi.fn().mockResolvedValueOnce(ANN).mockReturnValueOnce(reading.promise).mockResolvedValueOnce(ANN);
+    const made = await withRealLayers(getMe);
+    try {
+      refusedForTheAccount();
+      // Retired: not the old account's screen any more, but the gate's loading.
+      await waitFor(() => expect(screen.getByRole("status").textContent).toBe("正在加载…"));
+      expect(screen.queryByTestId("app")).toBeNull();
+      await act(async () => reading.reject(new ApiError(401, "unauthenticated")));
+      await screen.findByRole("button", { name: "登录" });
+      typeInto("邮箱", ANN.email);
+      typeInto("密码", "correct horse");
+      submit("登录");
+      await screen.findByTestId("app");
+      await act(async () => {
+        await settle();
+      });
+      expect(made).toHaveLength(2);
+      expect(made[1].getSnapshot().connection).toBe("live");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("a retired layer is never used again: 409, who is signed in cannot be read, 重试 — the same account, a fresh layer, live (T2 fix 4, U1)", async () => {
+    const getMe = vi.fn().mockResolvedValueOnce(ANN).mockRejectedValueOnce(new ApiError(0, "network_error")).mockResolvedValueOnce(ANN);
+    const made = await withRealLayers(getMe);
+    try {
+      refusedForTheAccount();
+      fireEvent.click(await screen.findByRole("button", { name: "重试" }));
+      await screen.findByTestId("app");
+      await act(async () => {
+        await settle();
+      });
+      expect(made).toHaveLength(2);
+      expect(made[1].getSnapshot().connection).toBe("live");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("the terms form is the session's: a 409 account_changed on its submit, then another account confirmed with the terms still to accept, gives that account a fresh form (T2 fix 4, U2)", async () => {

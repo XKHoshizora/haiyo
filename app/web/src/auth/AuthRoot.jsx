@@ -48,14 +48,16 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
   }, []);
 
   const confirm = useCallback(
-    (me, { fresh = false } = {}) => {
+    (me) => {
       const another = accountId.current !== null && accountId.current !== me.id;
+      // A retired layer (the account changed under it) is never started again, whoever is confirmed now (T2 fix 4, U1).
+      const retired = boxRef.current.layer.isRetired?.() === true;
       // A new session epoch first: an answer of the session before that lands from now on (a 401 included) is about that session.
       bumpSessionEpoch();
       accountId.current = me.id;
       // Every request from now on names this account (http.js `setAccount`): the service answers none for another.
       setAccount(me.id);
-      if (another || fresh) {
+      if (another || retired) {
         // Nothing of the account before is kept: its layer (retired at once: nothing more of it is applied, it signs nobody out; stopped
         // as the new one starts), what was typed in its forms.
         boxRef.current.layer.retire?.();
@@ -98,10 +100,12 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
       checkingAccount.current = true;
       boxRef.current.layer.retire?.();
       bumpSessionEpoch();
+      // Not the old account's screen meanwhile: the gate is loading until who is signed in is known (T2 fix 4, U1).
+      setSession({ status: "loading", expired: false });
       api.getMe({ anyAccount: true }).then(
         (me) => {
           checkingAccount.current = false;
-          confirm(me, { fresh: true });
+          confirm(me);
         },
         (err) => {
           checkingAccount.current = false;
