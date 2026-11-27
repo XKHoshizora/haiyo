@@ -5386,7 +5386,7 @@ option answered otherwise counts as unanswered. One attempt per channel, in orde
 and without progress), its answer at most 64 KiB; any failure — a status, the network, the time, the body, the key's
 variable unset at that moment — goes on to the next channel, and after the last the call has failed: `JudgeError`, whose
 `reason` says coarsely why the last channel tried gave no answer (and `sent` whether any channel's request went out: not for
-`key_unset` or `busy`) — `auth` (401 or 403), `status` (any other status but
+`key_unset` or `busy`; `busy` whether any channel found no place) — `auth` (401 or 403), `status` (any other status but
 200), `timeout`, `oversize`, `shape` (not `{"answers": {…}}`), `key_unset`, `busy` (no place among the calls in flight:
 nothing was sent, and a moment later there may be one), `network` (anything else: the connection, the address). The caller giving up (its signal) is its own abort, never a `JudgeError`,
 and no further channel is tried. It goes through the address guard (Model providers) with slots of its own: at most 32
