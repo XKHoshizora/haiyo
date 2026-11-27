@@ -111,7 +111,7 @@ describe("the persona aid's worker", () => {
     expect(Math.abs(expires - app.deps.config.others.cardDays * 86_400_000)).toBeLessThan(60_000);
     expect(await personaOf(w.agent.id)).toMatchObject({ persona_version: 1, persona_checked_version: 1 });
     // The line of the read: ids and counts.
-    expect(logged().filter((l) => l.metric === "persona_aid").map(({ agentId, cards, answered }) => ({ agentId, cards, answered }))).toEqual([{ agentId: w.agent.id, cards: 2, answered: true }]);
+    expect(logged().filter((l) => l.metric === "persona_aid").map(({ agentId, cards, answered, cut }) => ({ agentId, cards, answered, cut }))).toEqual([{ agentId: w.agent.id, cards: 2, answered: true, cut: false }]);
     // The same version is never read again; a new version is, whole.
     expect(await aid()).toBe(0);
     expect((await patchPersona(w.owner, w.agent.id, `${ROLE}${FACT}再加一句新的话。`)).status).toBe(200);
@@ -258,13 +258,15 @@ describe("the persona aid's worker", () => {
     expect(await sentencesOf(w.agent.conversationId)).toEqual([many[39]]);
   });
 
-  it("a request that fails or times out: that sentence is no candidate, the rest are asked, the version stays read", async () => {
+  it("a request that was sent and failed or timed out ends the read: what was answered before keeps its card, the rest is not asked, the version stays read (fix 1, F3)", async () => {
     await clearBacklog();
-    const w = await world(`${FACT}${ATTITUDE}${FACT2}`);
-    judge.answer(scoring({ [FACT]: new JudgeError("timeout"), [FACT2]: 0.9 }));
-    expect(await aid()).toBe(3);
+    const w = await world(`${FACT2}${FACT}${MIXED}`);
+    judge.answer(scoring({ [FACT2]: 0.9, [FACT]: new JudgeError("timeout"), [MIXED]: 0.9 }));
+    expect(await aid()).toBe(2);
+    expect(asked()).toEqual([FACT2, FACT]);
     expect(await sentencesOf(w.agent.conversationId)).toEqual([FACT2]);
     expect(await personaOf(w.agent.id)).toMatchObject({ persona_checked_version: 1 });
+    expect(await aid()).toBe(0);
   });
 
   it("refused for a moment (no place among the judgement's calls in flight): the version is given back and read at a later pass", async () => {
@@ -272,6 +274,8 @@ describe("the persona aid's worker", () => {
     const w = await world(`${FACT}${FACT2}`);
     judge.answer(scoring({ [FACT]: new JudgeError("busy") }));
     expect(await aid()).toBe(0);
+    // It was claimed and asked (the request found no place), then given back.
+    expect(asked()).toEqual([FACT]);
     expect(await personaOf(w.agent.id)).toMatchObject({ persona_version: 1, persona_checked_version: 0 });
     expect(await cardsOf(w.agent.conversationId)).toEqual([]);
     judge.answer(scoring({ [FACT]: 0.9 }));
@@ -296,65 +300,87 @@ describe("the persona aid's worker", () => {
     }
   });
 
-  it("sorting keeps priority: a read that would take the owner past half their judgements of the day is put off — at half or more the owner is not even claimed; under it, given back (round 1, A3)", async () => {
+  it("the aid uses at most half of the owner's judgements of the day: at half nothing is asked, the version stays read, the line says cut (fix 1, F1)", async () => {
     await clearBacklog();
-    const half = app.deps.config.memory.judgePerOwnerDay / 2;
-    expect(half).toBe(150);
+    expect(app.deps.config.memory.judgePerOwnerDay / 2).toBe(150);
     const w = await world(`${FACT}${FACT2}`);
-    // 149 + 2 sentences > 150: claimed, given back, nothing asked.
-    await setOwnerUsed(w.owner.id, 149);
-    expect(await aid()).toBe(0);
-    expect(await personaOf(w.agent.id)).toMatchObject({ persona_version: 1, persona_checked_version: 0 });
-    // At 150 the owner is not claimed at all: nothing is stamped, so no poll is spent on them.
     await setOwnerUsed(w.owner.id, 150);
-    const other = await world(FACT2);
-    judge.answer(scoring({ [FACT2]: 0.9 }));
-    expect(await aid()).toBe(1);
-    expect(asked()).toEqual([FACT2]);
-    expect(await personaOf(w.agent.id)).toMatchObject({ persona_checked_version: 0 });
-    expect(await sentencesOf(other.agent.conversationId)).toEqual([FACT2]);
-    // 148 + 2 = 150: asked.
-    await setOwnerUsed(w.owner.id, 148);
-    judge.calls.splice(0);
-    expect(await aid()).toBe(2);
-    expect(await personaOf(w.agent.id)).toMatchObject({ persona_checked_version: 1 });
-    expect(await sentencesOf(w.agent.conversationId)).toEqual([FACT2]);
+    expect(await aid()).toBe(0);
+    expect(judge.calls).toHaveLength(0);
+    expect(await personaOf(w.agent.id)).toMatchObject({ persona_version: 1, persona_checked_version: 1 });
+    expect(logged().filter((l) => l.metric === "persona_aid").map(({ cards, answered, cut }) => ({ cards, answered, cut }))).toEqual([{ cards: 0, answered: false, cut: true }]);
+    // Not read again for this version: the rest waits for the next save.
+    expect(await aid()).toBe(0);
+    expect(judge.calls).toHaveLength(0);
   });
 
-  it("half of an odd judgePerOwnerDay is a fraction: 5 a day puts off a one-sentence read at 2 used, asks it at 1", async () => {
+  it("reaching half part-way stops the read: what was answered keeps its card, the version stays read, the line says cut (fix 1, F1)", async () => {
     await clearBacklog();
-    const config = app.deps.config as { memory: typeof app.deps.config.memory };
-    const before = config.memory;
-    config.memory = { ...before, judgePerOwnerDay: 5 };
-    try {
-      const w = await world(FACT);
-      await setOwnerUsed(w.owner.id, 2);
-      expect(await aid()).toBe(0);
-      expect(await personaOf(w.agent.id)).toMatchObject({ persona_checked_version: 0 });
-      await setOwnerUsed(w.owner.id, 1);
-      expect(await aid()).toBe(1);
-      expect(await personaOf(w.agent.id)).toMatchObject({ persona_checked_version: 1 });
-    } finally {
-      config.memory = before;
-    }
+    const w = await world(`${FACT}${ATTITUDE}${FACT2}`);
+    await setOwnerUsed(w.owner.id, 148);
+    judge.answer(scoring({ [FACT]: 0.9, [FACT2]: 0.9 }));
+    // 148 and 149 are under 150: two are asked; at 150 the third is not.
+    expect(await aid()).toBe(2);
+    expect(asked()).toEqual([FACT, ATTITUDE]);
+    expect(await sentencesOf(w.agent.conversationId)).toEqual([FACT]);
+    expect(await personaOf(w.agent.id)).toMatchObject({ persona_checked_version: 1 });
+    expect(logged().filter((l) => l.metric === "persona_aid").map(({ cards, answered, cut }) => ({ cards, answered, cut }))).toEqual([{ cards: 1, answered: true, cut: true }]);
   });
 
-  it("sorting keeps priority site-wide: past half of memory's share of the site's day a read is put off; at half or more nothing is claimed", async () => {
+  it("the site's half: at half of memory's share of the site's day nothing more is asked, the version stays read (fix 1, F1)", async () => {
     await clearBacklog();
     // judgeShare 0.5 of dailyLimit 20 000: memory stops at 10 000, the persona aid at half of that.
     const half = (app.deps.config.memory.judgeShare * JUDGE.dailyLimit) / 2;
     expect(half).toBe(5000);
     const w = await world(`${FACT}${FACT2}`);
     await setSiteUsed(half - 1);
-    expect(await aid()).toBe(0);
-    expect(await personaOf(w.agent.id)).toMatchObject({ persona_checked_version: 0 });
-    await setSiteUsed(half);
-    expect(await aid()).toBe(0);
-    expect(await personaOf(w.agent.id)).toMatchObject({ persona_checked_version: 0 });
-    expect(judge.calls).toHaveLength(0);
-    await setSiteUsed(half - 2);
-    expect(await aid()).toBe(2);
+    judge.answer(scoring({ [FACT]: 0.9 }));
+    expect(await aid()).toBe(1);
+    expect(asked()).toEqual([FACT]);
     expect(await personaOf(w.agent.id)).toMatchObject({ persona_checked_version: 1 });
+    expect(await sentencesOf(w.agent.conversationId)).toEqual([FACT]);
+  });
+
+  it("terminal outcomes stay terminal: an owner whose day is used up, and a site whose memory share is 0, are read as far as they can be and stamped; the pass serves every owner it can (fix 1, F2)", async () => {
+    await clearBacklog();
+    const spent = await world(FACT);
+    await setOwnerUsed(spent.owner.id, app.deps.config.memory.judgePerOwnerDay);
+    const fresh = await world(FACT2);
+    judge.answer(scoring({ [FACT2]: 0.9 }));
+    expect(await aid()).toBe(1);
+    expect(asked()).toEqual([FACT2]);
+    for (const w of [spent, fresh]) expect(await personaOf(w.agent.id)).toMatchObject({ persona_checked_version: 1 });
+    const config = app.deps.config as { memory: typeof app.deps.config.memory };
+    const before = config.memory;
+    config.memory = { ...before, judgeShare: 0 };
+    try {
+      const owners = [await world(FACT), await world(FACT2)];
+      judge.calls.splice(0);
+      expect(await aid()).toBe(0);
+      expect(judge.calls).toHaveLength(0);
+      for (const w of owners) expect(await personaOf(w.agent.id)).toMatchObject({ persona_checked_version: 1 });
+      expect(await aid()).toBe(0);
+    } finally {
+      config.memory = before;
+    }
+  });
+
+  it("the worker claims one Agent at a time, just before it reads it: while the first is asked, the next is not stamped (fix 1, F3)", async () => {
+    await clearBacklog();
+    const first = await world(FACT);
+    const second = await world(FACT2);
+    const [a, b] = first.owner.id < second.owner.id ? [first, second] : [second, first];
+    judge.answer(() => "hang");
+    const running = aid();
+    while (judge.calls.length === 0) await new Promise((r) => setTimeout(r, 5));
+    expect((await personaOf(a.agent.id)).persona_checked_version).toBe(1);
+    expect((await personaOf(b.agent.id)).persona_checked_version).toBe(0);
+    // The hung request times out (a failed request: that read ends, stamped); the next owner's is then claimed and read.
+    judge.answer(scoring({ [FACT]: 0.9, [FACT2]: 0.9 }));
+    expect(await running).toBe(2);
+    expect((await personaOf(b.agent.id)).persona_checked_version).toBe(1);
+    expect(await cardsOf(a.agent.conversationId)).toEqual([]);
+    expect((await cardsOf(b.agent.conversationId)).length).toBe(1);
   });
 
   it("the memory chat model and its allowance play no part: a spent memory allowance still reads the persona", async () => {
@@ -390,7 +416,10 @@ describe("the persona aid's worker", () => {
 });
 
 describe("why there is no answer, and what the aid does with it (round 1, A2)", () => {
-  const silent = { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} } as unknown as FastifyBaseLogger;
+  /** The lines the aid logs in these tests (ids and counts only). */
+  const said: Record<string, unknown>[] = [];
+  const silent = { info: (o: Record<string, unknown>) => void said.push(o), debug: () => {}, warn: () => {}, error: () => {} } as unknown as FastifyBaseLogger;
+  const lastLine = () => said.filter((l) => l.metric === "persona_aid").at(-1);
   /** The Agent as the worker claims it: its version stamped as read (memory/judge.ts `claim`). */
   async function claimed(persona = `${FACT}${ATTITUDE}${FACT2}`): Promise<{ agent: Claimed; conversationId: string }> {
     await clearBacklog();
@@ -402,6 +431,8 @@ describe("why there is no answer, and what the aid does with it (round 1, A2)", 
   const run = (j: Judge | null, agent: Claimed, closing: AbortSignal = new AbortController().signal, over: { db?: Db } = {}) =>
     runPersonaAid({ db, config: app.deps.config, judge: j, conversations: app.deps.conversations, log: silent, ...over }, agent, closing);
   const stamp = async (agent: Claimed) => (await personaOf(agent.id)).persona_checked_version;
+  const ownerUsedOf = async (ownerId: string) =>
+    (await db.query<{ calls: number }>("select coalesce(sum(calls), 0)::int as calls from memory_judge_usage where owner_id = $1", [ownerId])).rows[0]!.calls;
   /** A judge that answers every question it is asked with `p`, after `before` (its `n`-th call: 1, 2, …). */
   const answering = (p: (state: string) => number, before: (call: number) => Promise<void> = async () => {}): Judge & { calls: number } => {
     const j = {
@@ -427,7 +458,7 @@ describe("why there is no answer, and what the aid does with it (round 1, A2)", 
     });
   };
 
-  it("given back for a later pass: the service stopping (before or while asking), the allowance unreadable (before or while asking), a moment's refusal", async () => {
+  it("given back for a later pass: the service stopping (before, while reading the limits, or while asking), the allowance unreadable (first sentence or later), a moment's refusal", async () => {
     const closed = new AbortController();
     closed.abort();
     const a = await claimed();
@@ -441,20 +472,41 @@ describe("why there is no answer, and what the aid does with it (round 1, A2)", 
     expect(await run(hangs, b.agent, stopping.signal)).toBe(1);
     expect(await stamp(b.agent)).toBe(0);
 
+    // The stop while the limits are read (fix 1, F4): nothing is sent, nothing counted.
+    const e = await claimed();
+    const stopsOnRead = new AbortController();
+    const reading = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop !== "query") return Reflect.get(target, prop, receiver);
+        return (sql: string, ...rest: unknown[]) => {
+          if (/^\s*select calls from judge_usage/.test(sql)) stopsOnRead.abort();
+          return (target.query as (...a: unknown[]) => unknown)(sql, ...rest);
+        };
+      },
+    }) as Db;
+    const unasked = answering(() => 0.9);
+    expect(await run(unasked, e.agent, stopsOnRead.signal, { db: reading })).toBe(0);
+    expect([unasked.calls, await stamp(e.agent), await ownerUsedOf(e.agent.ownerId)]).toEqual([0, 0, 0]);
+
+    // The first sentence's limits unreadable: nothing asked; the second's: one asked.
     for (const from of [1, 2]) {
       const c = await claimed();
       const j = answering(() => 0.9);
-      expect(await run(j, c.agent, undefined, { db: failingFrom(/^\s*select calls from memory_judge_usage/, from) })).toBe(0);
-      expect([from, j.calls, await stamp(c.agent)]).toEqual([from, 0, 0]);
+      expect(await run(j, c.agent, undefined, { db: failingFrom(/^\s*select calls from memory_judge_usage/, from) })).toBe(from - 1);
+      expect([from, j.calls, await stamp(c.agent)]).toEqual([from, from - 1, 0]);
     }
 
+    // Busy, nothing sent: given back, and not counted for the owner or the site (fix 1, F4).
     const d = await claimed();
+    const siteBefore = Number((await db.query<{ n: string }>("select coalesce(sum(calls), 0)::text as n from judge_usage")).rows[0]!.n);
     expect(await run({ ask: async () => Promise.reject(new JudgeError("busy")) }, d.agent)).toBe(0);
     expect(await stamp(d.agent)).toBe(0);
-    for (const x of [a, b, d]) expect(await cardsOf(x.conversationId)).toEqual([]);
+    expect(await ownerUsedOf(d.agent.ownerId)).toBe(0);
+    expect(Number((await db.query<{ n: string }>("select coalesce(sum(calls), 0)::text as n from judge_usage")).rows[0]!.n)).toBe(siteBefore);
+    for (const x of [a, b, d, e]) expect(await cardsOf(x.conversationId)).toEqual([]);
   });
 
-  it("kept as read: no judge; the owner's or the site's day used up while asking (what was answered still counts, nothing more is asked); a failed request", async () => {
+  it("kept as read: no judge; the owner's or the site's half reached while asking (what was answered still counts, nothing more is asked, cut); a request sent and failed, also busy on a later channel; every key unset", async () => {
     const a = await claimed();
     expect(await run(null, a.agent)).toBe(0);
     expect(await stamp(a.agent)).toBe(1);
@@ -465,6 +517,7 @@ describe("why there is no answer, and what the aid does with it (round 1, A2)", 
     expect(await run(owner, b.agent)).toBe(1);
     expect([owner.calls, await stamp(b.agent)]).toEqual([1, 1]);
     expect(await cardsOf(b.conversationId)).toEqual([]);
+    expect(lastLine()).toMatchObject({ cards: 0, answered: true, cut: true });
 
     // The site's: what was answered before still makes its card.
     const c = await claimed(`${FACT}${ATTITUDE}${FACT2}`);
@@ -472,19 +525,30 @@ describe("why there is no answer, and what the aid does with it (round 1, A2)", 
     expect(await run(site, c.agent)).toBe(1);
     expect([site.calls, await stamp(c.agent)]).toEqual([1, 1]);
     expect(await sentencesOf(c.conversationId)).toEqual([FACT]);
+    expect(lastLine()).toMatchObject({ cards: 1, answered: true, cut: true });
     await setSiteUsed(0);
 
-    const d = await claimed(`${FACT}${FACT2}`);
-    let calls = 0;
-    const flaky: Judge = {
-      ask: async (state, questions) => {
-        if (++calls === 1) throw new JudgeError("network");
-        return new Map(questions.map((q) => [q.key, { type: "noul", p: high(FACT2)(state) }]));
-      },
-    };
-    expect(await run(flaky, d.agent)).toBe(2);
-    expect(await stamp(d.agent)).toBe(1);
-    expect(await sentencesOf(d.conversationId)).toEqual([FACT2]);
+    // A request sent that failed (fix 1, F3), whether its last channel failed or found no place after an earlier one was sent: the
+    // read ends there, what was answered before keeps its card.
+    for (const failure of [new JudgeError("network"), new JudgeError("busy", true)]) {
+      const d = await claimed(`${FACT}${FACT2}${MIXED}`);
+      let calls = 0;
+      const flaky: Judge = {
+        ask: async (state, questions) => {
+          if (++calls === 2) throw failure;
+          return new Map(questions.map((q) => [q.key, { type: "noul", p: state === `句子：${MIXED}` || state === `句子：${FACT}` ? 0.9 : 0.05 }]));
+        },
+      };
+      expect([failure.reason, await run(flaky, d.agent), calls]).toEqual([failure.reason, 2, 2]);
+      expect(await stamp(d.agent)).toBe(1);
+      expect(await sentencesOf(d.conversationId)).toEqual([FACT]);
+      expect(lastLine()).toMatchObject({ cards: 1, answered: true, cut: false });
+    }
+
+    // Every key unset: nothing was sent, nothing counted; the read ends and the version stays read.
+    const f = await claimed(`${FACT}${FACT2}`);
+    expect(await run({ ask: async () => Promise.reject(new JudgeError("key_unset")) }, f.agent)).toBe(0);
+    expect([await stamp(f.agent), await ownerUsedOf(f.agent.ownerId)]).toEqual([1, 0]);
   });
 
   it("a persona saved while the questions are out: no card is written for the old version (the newer is read on its own)", async () => {
@@ -531,6 +595,28 @@ describe("the sentences that are asked (round 1, A4, A5)", () => {
     expect(texts(`${exactly}${"字".repeat(200)}。`)).toEqual([exactly]);
   });
 
+  it("a line ended by CRLF: the card's sentence is the span with its line break, the request and the 200-character limit use its trimmed text (fix 1, F5)", () => {
+    const line = (n: number) => `${"字".repeat(n)}\r\n`;
+    const persona = `${line(199)}${line(200)}${line(201)}最后一句话。`;
+    const got = personaSentences(persona);
+    expect(got.map((s) => s.text)).toEqual([line(199), line(200), "最后一句话。"]);
+    expect(got.map((s) => s.asked)).toEqual(["字".repeat(199), "字".repeat(200), "最后一句话。"]);
+    for (const s of got) expect(sentenceSpan(persona, s.text)).toEqual({ start: s.start, end: s.end });
+    // The same words ended two ways are one sentence: asked once.
+    expect(texts("主人住在杭州\r\n主人住在杭州\n")).toEqual(["主人住在杭州\r\n"]);
+  });
+
+  it("the request carries the trimmed text: a CRLF line is asked without its line break, its card keeps it", async () => {
+    await clearBacklog();
+    // A line with no end mark of its own: its line break ends it.
+    const line = FACT.slice(0, -1);
+    const w = await world(`${line}\r\n${FACT2}`);
+    judge.answer(scoring({ [line]: 0.9 }));
+    expect(await aid()).toBe(2);
+    expect(judge.calls.map((c) => c.state)).toEqual([`句子：${line}`, `句子：${FACT2}`]);
+    expect(await sentencesOf(w.agent.conversationId)).toEqual([`${line}\r\n`]);
+  });
+
   it("property: every span is the one sentenceSpan finds for its text, so a card's sentence can always be moved (CRLF, trailing spaces, no final mark, repeats, bullets)", () => {
     // mulberry32, a fixed seed: the same 400 personas every run.
     let seed = 7;
@@ -560,7 +646,8 @@ describe("the sentences that are asked (round 1, A4, A5)", () => {
         seen.add(s.text);
         expect(s.start).toBeGreaterThan(last);
         last = s.end - 1;
-        expect([...s.text].length).toBeLessThanOrEqual(200);
+        expect(s.asked).toBe(s.text.trim());
+        expect([...s.asked].length).toBeLessThanOrEqual(200);
       }
     }
   });
@@ -601,6 +688,8 @@ describe("the card and its answer", () => {
   it("the owner reads the card with its answer and whether it is over; moving removes exactly that sentence, writes it as a note, and asks nothing new", async () => {
     const w = await carded();
     expect((await wireCard(w.owner, w))!.system).toMatchObject({ event: "persona_fact", sentence: FACT, card: { answer: null, expired: false, sentence: FACT } });
+    // Nothing is asked for the move, nor for the owner's own edit it makes.
+    const before = judge.calls.length;
     const moved = await answer(w.owner, w.agent.id, w.seq, true);
     expect([moved.status, moved.json]).toEqual([200, { ok: true, moved: true }]);
     expect(await personaOf(w.agent.id)).toEqual({ persona: PERSONA.replace(FACT, ""), persona_version: 2, persona_checked_version: 2 });
@@ -608,8 +697,7 @@ describe("the card and its answer", () => {
     expect(notes).toEqual([{ text: FACT, vault: true }]);
     expect((await db.query(`select answer from social_card_answers`)).rows.map((r) => r.answer)).toContain("moved");
     expect((await wireCard(w.owner, w))!.system).toMatchObject({ card: { answer: "moved", expired: false } });
-    // Nothing asked for the owner's own edit.
-    const before = judge.calls.length;
+    expect(judge.calls).toHaveLength(before);
     expect(await aid()).toBe(0);
     expect(judge.calls).toHaveLength(before);
     // A second answer, either way: 409 answered.

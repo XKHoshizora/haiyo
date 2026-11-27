@@ -26,9 +26,16 @@ export type Answer = { type: "noul"; p: number } | { type: "choice"; probabiliti
  */
 export type JudgeFailure = "auth" | "status" | "timeout" | "oversize" | "shape" | "key_unset" | "busy" | "network";
 
-/** No channel gave an answer; `reason` is why the last one tried did not. */
+/**
+ * No channel gave an answer; `reason` is why the last one tried did not. `sent`: whether any channel's request went out — every
+ * failure but a key unset (`key_unset`) and no place among the calls in flight (`busy`) is one that tried to reach the upstream. Made
+ * by hand (a test's script), it follows the reason unless given.
+ */
 export class JudgeError extends Error {
-  constructor(readonly reason: JudgeFailure) {
+  constructor(
+    readonly reason: JudgeFailure,
+    readonly sent: boolean = reason !== "busy" && reason !== "key_unset",
+  ) {
     super("the judgement model gave no answer");
     this.name = "JudgeError";
   }
@@ -157,14 +164,16 @@ export function createJudge(
       if (sendable.length === 0) return new Map();
       const body = bodyOf(config.model, state, sendable);
       let failure: JudgeFailure = "network";
+      let sent = false;
       for (const channel of config.channels) {
         const answers = await attempt(channel, body, sendable, signal);
         // The caller gave up: that is its abort, not a channel's failure, and no other channel is tried.
         signal?.throwIfAborted();
         if (typeof answers !== "string") return answers;
         failure = answers;
+        if (answers !== "busy" && answers !== "key_unset") sent = true;
       }
-      throw new JudgeError(failure);
+      throw new JudgeError(failure, sent);
     },
   };
 }

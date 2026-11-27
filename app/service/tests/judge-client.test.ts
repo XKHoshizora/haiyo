@@ -366,12 +366,26 @@ describe("why no channel answered (JudgeError.reason), coarse and text-free", ()
     while (server.seen.length < 32 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
     expect(server.seen).toHaveLength(32);
     const err = await judge.ask("s", [Q[0]!]).then(() => null, (e: unknown) => e);
-    expect([err instanceof JudgeError, (err as JudgeError).reason]).toEqual([true, "busy"]);
+    expect([err instanceof JudgeError, (err as JudgeError).reason, (err as JudgeError).sent]).toEqual([true, "busy", false]);
     await new Promise((r) => setTimeout(r, 50));
     expect(server.seen).toHaveLength(32);
     ctl.abort();
     await Promise.all(held);
     expect(await judge.ask("s", [Q[0]!])).toEqual(new Map([["need", n(0.5)]]));
+  });
+
+  test("whether any channel's request went out (sent): not for a key unset or busy, yes for any other failure, carried across channels", async () => {
+    const errOf = async (judge: ReturnType<typeof make>) => (await judge.ask("s", [Q[0]!]).then(() => null, (e: unknown) => e)) as JudgeError;
+    const broken = await failing(500);
+    const unset = (urls: string[], env: Record<string, string>) =>
+      createJudge({ model: "m", channels: urls.map((url, i) => ({ url, apiKeyEnv: i === 0 ? "JUDGE_KEY_A" : "JUDGE_KEY_B" })), timeoutMs: 1000, dailyLimit: 10 }, { allowInsecureLocal: true, env });
+    expect([(await errOf(unset([broken.url], {}))).reason, (await errOf(unset([broken.url], {}))).sent]).toEqual(["key_unset", false]);
+    expect([(await errOf(make([broken.url]))).reason, (await errOf(make([broken.url]))).sent]).toEqual(["status", true]);
+    // The first channel's request went out and failed; the second's key is unset: the reason is the last channel's, but a request was sent.
+    const both = await errOf(unset([broken.url, broken.url], { JUDGE_KEY_A: KEY_A }));
+    expect([both.reason, both.sent]).toEqual(["key_unset", true]);
+    // Made by hand, a JudgeError says it was sent unless its reason is one that sends nothing.
+    expect([new JudgeError("busy").sent, new JudgeError("key_unset").sent, new JudgeError("timeout").sent, new JudgeError("busy", true).sent]).toEqual([false, false, true, true]);
   });
 
   test("the reason is the last channel's", async () => {

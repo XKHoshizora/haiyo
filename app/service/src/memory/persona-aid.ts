@@ -1,6 +1,4 @@
 import type { FastifyBaseLogger } from "fastify";
-import { siteDay } from "../accounts/store.ts";
-import { judgementsOn } from "../agents/proactive/decide.ts";
 import { lockAgent, lockOwnedAgent } from "../agents/store.ts";
 import type { Config } from "../config.ts";
 import type { ConversationEvents } from "../conversations/events.ts";
@@ -10,7 +8,7 @@ import { AppError, notFound } from "../errors.ts";
 import type { Judge, Question } from "../judge/client.ts";
 import type { StoredMessage } from "../messages/model.ts";
 import { ownerNote } from "./clean.ts";
-import { askAllOutcome, judgeConfigured, ownerJudgementsUsed, type NoAnswer, type SortDeps } from "./sort.ts";
+import { askAllOutcome, judgeConfigured, type NoAnswer, type SortDeps } from "./sort.ts";
 import { roomOf } from "./store.ts";
 import { weight, weightOf } from "./weight.ts";
 import { insertNote, listRoom, lockRoom, roomLimit, fits, type Room } from "./write.ts";
@@ -19,9 +17,10 @@ import { insertNote, listRoom, lockRoom, roomLimit, fits, type Room } from "./wr
 // persona whole to a visitor's reply, so each new persona version is read once for sentences that tell a stranger a fact of the owner's
 // or someone else's real life. The judgement is where every other memory judgement is: the decision model, one calibrated yes/no
 // question (`PERSONA_FACT_INSTRUCTIONS`) per sentence, one request each through memory's judgement path (memory/sort.ts
-// `askAllOutcome`: the owner's `judgePerOwnerDay`, memory's `judgeShare` of the site's day), a sentence at `MEMORY.personaFactAt` or more
-// a candidate. No chat model is called and no memory allowance spent; no note is read, vault or other. The three highest candidates
-// not asked before each become a card for the owner alone. Nothing here logs a sentence, a persona or a note: counters and ids.
+// `askAllOutcome`: the owner's `judgePerOwnerDay` and memory's `judgeShare` of the site's day, each to `PERSONA_SHARE` of it), a
+// sentence at `MEMORY.personaFactAt` or more a candidate. No chat model is called and no memory allowance spent; no note is read, vault
+// or other. The three highest candidates not asked before each become a card for the owner alone. Nothing here logs a sentence, a
+// persona or a note: counters and ids.
 
 /** The most cards one persona version gets. */
 export const PERSONA_CARDS = 3;
@@ -44,10 +43,16 @@ const QUESTION: Question = { key: PERSONA_FACT, type: "noul", instructions: PERS
  */
 export const PERSONA_ASKED = 40;
 /**
- * A sentence longer than this many characters is not asked (round 1, A5): what was calibrated are single sentences, and an ASCII full
- * stop ends none (`END`), so a paragraph of a Latin script is one span, and a card for it would move the whole paragraph.
+ * A sentence longer than this many characters (its trimmed text, the one asked) is not asked (round 1, A5): what was calibrated are
+ * single sentences, and an ASCII full stop ends none (`END`), so a paragraph of a Latin script is one span, and a card for it would
+ * move the whole paragraph.
  */
 const LONGEST_ASKED = 200;
+/**
+ * The share of the owner's judgements of the day, and of memory's share of the site's day, the persona aid may reach (fix 1, F1): the
+ * gate every memory judgement passes, with this ceiling, so that sorting keeps priority. Refused by it, the read stops where it is.
+ */
+const PERSONA_SHARE = 0.5;
 
 /** The marks that end a sentence of a persona (and a line break). */
 const END = "。！？!?；;\n";
@@ -78,18 +83,23 @@ export function sentenceSpan(persona: string, sentence: string): { start: number
   }
 }
 
-/** A sentence of a persona: where it stands, and its text (`persona.slice(start, end)`, its own end mark with it). */
+/**
+ * A sentence of a persona: where it stands; its text (`persona.slice(start, end)`, its own end mark with it, a line break that ends it
+ * included), which is what a card carries and a move takes out; and what is asked of it (`asked`, the text trimmed: a clean sentence,
+ * as calibrated), which the length limit measures too (fix 1, F5).
+ */
 export interface PersonaSentence {
   start: number;
   end: number;
   text: string;
+  asked: string;
 }
 
 /**
  * The sentences of `persona` the aid asks about, in the persona's order: each piece of it up to and with an end mark (`END`; the last
  * piece runs to its end), without the spaces before it that `sentenceSpan` steps over, kept only when `sentenceSpan` finds exactly that
- * span for its text — so a card made of it can always be moved (round 1, A4) — and when it is at most `LONGEST_ASKED` characters long.
- * The same text is asked once: at its first place, the one `sentenceSpan` finds.
+ * span for its text — so a card made of it can always be moved (round 1, A4) — and when what is asked is at most `LONGEST_ASKED`
+ * characters long. The same words are asked once (whatever ends them): at their first place, the one `sentenceSpan` finds.
  */
 export function personaSentences(persona: string): PersonaSentence[] {
   const out: PersonaSentence[] = [];
@@ -103,34 +113,21 @@ export function personaSentences(persona: string): PersonaSentence[] {
     while (start < end && LEAD.includes(persona[start]!)) start++;
     if (start === end) continue;
     const text = persona.slice(start, end);
-    if (seen.has(text) || [...text.trim()].length > LONGEST_ASKED) continue;
+    const asked = text.trim();
+    if (seen.has(asked) || [...asked].length > LONGEST_ASKED) continue;
     const span = sentenceSpan(persona, text);
     if (span === null || span.start !== start || span.end !== end) continue;
-    seen.add(text);
-    out.push({ start, end, text });
+    seen.add(asked);
+    out.push({ start, end, text, asked });
   }
   return out;
 }
 
 /**
- * Sorting keeps priority (round 1, A3): the persona aid reads a persona only while the owner's memory judgements of the day stay within
- * half of their `judgePerOwnerDay` (`ownerRoom`), and the site's judgements of the day within half of memory's `judgeShare` of its daily
- * limit (`siteRoom`; none without a judgement model) — counting the requests the read will make.
- */
-export const ownerRoom = (config: Pick<Config, "memory">): number => config.memory.judgePerOwnerDay / 2;
-export const siteRoom = (config: Pick<Config, "memory" | "judge">): number =>
-  config.judge === null ? Number.POSITIVE_INFINITY : (config.memory.judgeShare * config.judge.dailyLimit) / 2;
-
-/** Whether `count` more requests for `ownerId` now would pass `ownerRoom` or `siteRoom`. A read that fails throws. */
-async function crowds(db: Db, config: Config, ownerId: string, count: number): Promise<boolean> {
-  const day = siteDay(new Date(), config.siteTimezone);
-  if ((await ownerJudgementsUsed(db, ownerId, day)) + count > ownerRoom(config)) return true;
-  return (await judgementsOn(db, day)) + count > siteRoom(config);
-}
-
-/**
- * The refusals that clear by themselves (round 1, A2): the version is given back (`releasePersona`), to be read whole at a later pass.
- * Any other — no judgement model, the owner's or the site's day used up — leaves it read: the aid is a help, never a gate.
+ * The refusals that clear by themselves (round 1, A2; fix 1, F2): the service stopping, the limits unreadable, no place among the
+ * judgement's calls with nothing sent. The version is given back (`releasePersona`), to be read whole at a later pass. Anything else —
+ * no judgement model, `PERSONA_SHARE` of a day reached, a request that went out and failed — ends the read and leaves it read: what was
+ * answered stands, and the rest waits for the persona's next save (the aid is a help, never a gate).
  */
 const GIVEN_BACK: ReadonlySet<NoAnswer> = new Set<NoAnswer>(["closing", "limit_unread", "busy"]);
 
@@ -160,11 +157,10 @@ interface Candidate {
 
 /**
  * One Agent's persona, read once: its first `PERSONA_ASKED` sentences (`personaSentences`), each asked `QUESTION` in a request of its
- * own, then under the Agent's lock the cards. Before anything is asked, a read that would crowd out sorting (`crowds`) is given back.
- * A sentence whose request failed is no candidate; once no more can be asked (no judgement model, the owner's or the site's day used
- * up) the sentences answered so far are all there is; a refusal that clears by itself (`GIVEN_BACK`) gives the version back. When the
- * persona was saved again while the questions were out, nothing is written (the newer version is read on its own). Returns the requests
- * made.
+ * own (at most `PERSONA_SHARE` of the day's judgements, the owner's and the site's), then under the Agent's lock the cards. A refusal
+ * that clears by itself (`GIVEN_BACK`) gives the version back; any other end of the questions (the ceiling reached — logged `cut` —,
+ * a request that failed, no judgement model) keeps the candidates found so far and the stamp. When the persona was saved again while
+ * the questions were out, nothing is written (the newer version is read on its own). Returns the requests that went out.
  */
 export async function runPersonaAid(deps: PersonaAidDeps, agent: Claimed, closing: AbortSignal): Promise<number> {
   const { db, config, log } = deps;
@@ -176,26 +172,15 @@ export async function runPersonaAid(deps: PersonaAidDeps, agent: Claimed, closin
   const sort: SortDeps = { db, ownerId: agent.ownerId, judge: deps.judge, config, log };
   const sentences = personaSentences(agent.persona).slice(0, PERSONA_ASKED);
   if (!judgeConfigured(sort) || sentences.length === 0) {
-    log.info({ metric: "persona_aid", agentId: agent.id, cards: 0, answered: false }, "the persona aid read a persona");
-    return 0;
-  }
-  // Sorting keeps priority: a read that would crowd it out, or whose numbers cannot be read, waits for a later pass.
-  let deferred: boolean;
-  try {
-    deferred = await crowds(db, config, agent.ownerId, sentences.length);
-  } catch (err) {
-    log.info({ metric: "judge_limit_check_failed", err }, "the judgement limit could not be read: not judged");
-    deferred = true;
-  }
-  if (deferred) {
-    await releasePersona(db, agent);
+    log.info({ metric: "persona_aid", agentId: agent.id, cards: 0, answered: false, cut: false }, "the persona aid read a persona");
     return 0;
   }
   let started = 0;
   let answered = false;
+  let cut = false;
   const candidates: Candidate[] = [];
   for (const [order, s] of sentences.entries()) {
-    const asked = await askAllOutcome(sort, `句子：${s.text.trim()}`, [QUESTION], "persona", closing);
+    const asked = await askAllOutcome(sort, `句子：${s.asked}`, [QUESTION], "persona", { closing, ceiling: PERSONA_SHARE, chargeUnsent: false });
     if (asked.started) started++;
     if (asked.answers === null) {
       // A moment's refusal, the limits unreadable, the stop: the version is read whole at a later pass.
@@ -203,9 +188,8 @@ export async function runPersonaAid(deps: PersonaAidDeps, agent: Claimed, closin
         await releasePersona(db, agent);
         return started;
       }
-      // This request failed: this sentence is no candidate.
-      if (asked.why === "failed") continue;
-      // No judge, the owner's or the site's day used up: nothing more can be asked now; what was answered stands.
+      // The ceiling reached (sorting keeps priority), a request that failed, no judge: the read ends here; what was answered stands.
+      cut = asked.why === "owner_limit" || asked.why === "site_share";
       break;
     }
     answered = true;
@@ -213,7 +197,7 @@ export async function runPersonaAid(deps: PersonaAidDeps, agent: Claimed, closin
     if (answer?.type === "noul" && answer.p >= config.memory.personaFactAt) candidates.push({ sentence: s.text, p: answer.p, order });
   }
   if (candidates.length === 0) {
-    log.info({ metric: "persona_aid", agentId: agent.id, cards: 0, answered }, "the persona aid read a persona");
+    log.info({ metric: "persona_aid", agentId: agent.id, cards: 0, answered, cut }, "the persona aid read a persona");
     return started;
   }
   const expiresAt = new Date(Date.now() + config.others.cardDays * 86_400_000).toISOString();
@@ -242,7 +226,7 @@ export async function runPersonaAid(deps: PersonaAidDeps, agent: Claimed, closin
     return out;
   });
   if (posted.length > 0) deps.conversations.publish({ messages: posted, conversations: [] }, log);
-  log.info({ metric: "persona_aid", agentId: agent.id, cards: posted.length, answered: true }, "the persona aid read a persona");
+  log.info({ metric: "persona_aid", agentId: agent.id, cards: posted.length, answered: true, cut }, "the persona aid read a persona");
   return started;
 }
 

@@ -4,7 +4,7 @@ import { siteDay } from "../src/accounts/store.ts";
 import type { Config } from "../src/config.ts";
 import type { Db } from "../src/db.ts";
 import { JudgeError, type Answer, type Judge } from "../src/judge/client.ts";
-import { addsNothing, askAll, askAllOutcome, duplicateOf, ownerAsked, resortNote, sortNote, type SortDeps } from "../src/memory/sort.ts";
+import { addsNothing, askAll, askAllOutcome, duplicateOf, ownerAsked, resortNote, sortNote, type AskOptions, type SortDeps } from "../src/memory/sort.ts";
 import { signUp } from "./helpers/actors.ts";
 import { SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -504,7 +504,7 @@ describe("ownerAsked", () => {
 // later pass, a lasting one is not (persona aid v2, round 1 ruling A2). `askAll` is this with the reason dropped.
 describe("askAllOutcome: the answers, or why there are none", () => {
   const Q1 = [{ key: "k", type: "noul" as const, instructions: "i" }];
-  const ask = (d: SortDeps, closing?: AbortSignal) => askAllOutcome(d, "s", Q1, "sort", closing);
+  const ask = (d: SortDeps, closing?: AbortSignal, opts: Omit<AskOptions, "closing"> = {}) => askAllOutcome(d, "s", Q1, "sort", { ...opts, closing });
   const failing = (when: RegExp): Db =>
     new Proxy(db, {
       get(target, prop, receiver) {
@@ -543,10 +543,65 @@ describe("askAllOutcome: the answers, or why there are none", () => {
     judge.answer(() => new JudgeError("busy"));
     expect(await ask(deps())).toEqual({ answers: null, why: "busy", started: false });
     expect(await used()).toBe(1);
+    expect(await ownerUsed()).toBe(1);
   });
 
-  it("a request made that gave no answer is failed and started: any other JudgeError, a timeout, a missing key is no failure but an answer without it", async () => {
-    for (const reason of ["auth", "status", "timeout", "oversize", "shape", "key_unset", "network"] as const) {
+  it("chargeUnsent false (the persona aid): a request that sent nothing is not counted for the site or the owner; one that went out is", async () => {
+    judge.answer(() => new JudgeError("busy"));
+    expect(await ask(deps(), undefined, { chargeUnsent: false })).toEqual({ answers: null, why: "busy", started: false });
+    judge.answer(() => new JudgeError("key_unset"));
+    expect(await ask(deps(), undefined, { chargeUnsent: false })).toEqual({ answers: null, why: "failed", started: false });
+    expect([await used(), await ownerUsed()]).toEqual([0, 0]);
+    judge.answer(() => new JudgeError("status"));
+    expect(await ask(deps(), undefined, { chargeUnsent: false })).toEqual({ answers: null, why: "failed", started: true });
+    judge.answer(() => ({ k: 0.5 }));
+    await ask(deps(), undefined, { chargeUnsent: false });
+    expect([await used(), await ownerUsed()]).toEqual([2, 2]);
+  });
+
+  it("a request sent on one channel and busy on the next is failed and started, not busy: something went out", async () => {
+    judge.answer(() => new JudgeError("busy", true));
+    expect(await ask(deps())).toEqual({ answers: null, why: "failed", started: true });
+    judge.answer(() => new JudgeError("key_unset"));
+    expect(await ask(deps())).toEqual({ answers: null, why: "failed", started: false });
+  });
+
+  it("a ceiling (the persona aid's half): refused at that share of the owner's day and of memory's share of the site's day; no ceiling, as before", async () => {
+    judge.answer(() => ({ k: 0.5 }));
+    await db.query("insert into memory_judge_usage (owner_id, day, calls) values ($1, $2::date, 150)", [ownerId, today()]);
+    expect(await ask(deps(), undefined, { ceiling: 0.5 })).toEqual({ answers: null, why: "owner_limit", started: false });
+    expect((await ask(deps())).answers).not.toBeNull();
+    // Half of an odd allowance is a fraction: 2 of 5 is under 2.5, 3 is not.
+    await db.query("update memory_judge_usage set calls = 2 where owner_id = $1", [ownerId]);
+    expect((await ask(deps({}, withMemory({ judgePerOwnerDay: 5 })), undefined, { ceiling: 0.5 })).answers).not.toBeNull();
+    expect(await ask(deps({}, withMemory({ judgePerOwnerDay: 5 })), undefined, { ceiling: 0.5 })).toEqual({ answers: null, why: "owner_limit", started: false });
+    // The site: memory's share of 10 is 5, half of it 2.5.
+    await db.query("delete from memory_judge_usage");
+    await db.query("insert into judge_usage (day, calls) values ($1::date, 3) on conflict (day) do update set calls = 3", [today()]);
+    const site = { judge: { ...JUDGE, dailyLimit: 10 } };
+    expect(await ask(deps({}, site), undefined, { ceiling: 0.5 })).toEqual({ answers: null, why: "site_share", started: false });
+    expect((await ask(deps({}, site))).answers).not.toBeNull();
+  });
+
+  it("the service stopping while the limits are read: closing, nothing sent, nothing counted", async () => {
+    judge.answer(() => ({ k: 0.5 }));
+    const closing = new AbortController();
+    const stopsOnRead = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop !== "query") return Reflect.get(target, prop, receiver);
+        return (sql: string, ...rest: unknown[]) => {
+          if (/^\s*select calls from judge_usage/.test(sql)) closing.abort();
+          return (target.query as (...a: unknown[]) => unknown)(sql, ...rest);
+        };
+      },
+    }) as Db;
+    expect(await ask(deps({ db: stopsOnRead }), closing.signal)).toEqual({ answers: null, why: "closing", started: false });
+    expect(judge.calls).toHaveLength(0);
+    expect([await used(), await ownerUsed()]).toEqual([0, 0]);
+  });
+
+  it("a request made that gave no answer is failed and started: any JudgeError that went out, a timeout; a missing key is no failure but an answer without it (every key unset: below)", async () => {
+    for (const reason of ["auth", "status", "timeout", "oversize", "shape", "network"] as const) {
       judge.answer(() => new JudgeError(reason));
       expect([reason, await ask(deps())]).toEqual([reason, { answers: null, why: "failed", started: true }]);
     }

@@ -87,37 +87,52 @@ export const judgeConfigured = (deps: Pick<SortDeps, "judge" | "config">): boole
 
 /**
  * Why a memory judgement has no answers (`askAllOutcome`). Refused before anything was sent: `no_judge` (no judgement model
- * configured), `owner_limit` (the owner's `judgePerOwnerDay` used up), `site_share` (the site's judgements of the day at
- * `MEMORY.judgeShare` of its daily limit), `limit_unread` (those numbers could not be read), `closing` (the service is stopping; also
- * when the stop ended a request under way), `busy` (the judgement client had no place among its calls in flight: nothing was sent,
- * and a moment later there may be one). Asked and not answered: `failed` (no answer in time, or any other failure of the request).
+ * configured), `owner_limit` (the owner's `judgePerOwnerDay` used up, or the caller's `ceiling` of it), `site_share` (the site's
+ * judgements of the day at `MEMORY.judgeShare` of its daily limit, or the caller's `ceiling` of that), `limit_unread` (those numbers
+ * could not be read), `closing` (the service is stopping; also when the stop ended a request under way), `busy` (the judgement client
+ * had no place among its calls in flight and no channel's request went out: a moment later there may be one). Otherwise `failed` (no
+ * answer in time, or any other failure of the request; also every key unset, which sends nothing either).
  */
 export type NoAnswer = "no_judge" | "owner_limit" | "site_share" | "limit_unread" | "closing" | "busy" | "failed";
 
-/** What `askAllOutcome` came to: the answers it did give, by key; or none, and why. `started`: a request was sent. */
+/** What `askAllOutcome` came to: the answers it did give, by key; or none, and why. `started`: a request went out. */
 export type Asked = { answers: Map<string, Answer>; started: true } | { answers: null; why: NoAnswer; started: boolean };
 
 /**
- * One judgement call with `questions` about `state`, counted in `judge_usage`, bounded as the proactive decision is (each
- * channel its `timeoutMs`). Asked only when it can be (each refusal is a `NoAnswer`); once `closing` has fired nothing is asked
- * (and nothing counted), and a request under way ends with it (no answer). A call of the client is counted for the site and the
- * owner whatever came of it (`busy` too). The answers are the ones it did give: a key left out is no answer.
+ * How a caller asks (`askAllOutcome`). `closing`: the service's stop. `ceiling`: the share of the owner's `judgePerOwnerDay`, and of
+ * memory's `judgeShare` of the site's day, this caller may reach (default 1, all of it; the persona aid's is lower, so that sorting
+ * keeps priority). `chargeUnsent` false: a request that sent nothing (`busy`, a key unset) is not counted for the site or the owner
+ * (default true: every call of the client is counted, as it always was).
  */
-export async function askAllOutcome(deps: SortDeps, state: string, questions: readonly Question[], purpose: JudgePurpose, closing?: AbortSignal): Promise<Asked> {
+export interface AskOptions {
+  closing?: AbortSignal;
+  ceiling?: number;
+  chargeUnsent?: boolean;
+}
+
+/**
+ * One judgement call with `questions` about `state`, counted in `judge_usage`, bounded as the proactive decision is (each
+ * channel its `timeoutMs`). Asked only when it can be (each refusal is a `NoAnswer`; the limits at `ceiling` of them); once `closing`
+ * has fired nothing is asked (and nothing counted) — looked at again after the limits are read — and a request under way ends with it
+ * (no answer). A call of the client is counted for the site and the owner whatever came of it (`busy` too, unless `chargeUnsent` is
+ * false). The answers are the ones it did give: a key left out is no answer.
+ */
+export async function askAllOutcome(deps: SortDeps, state: string, questions: readonly Question[], purpose: JudgePurpose, opts: AskOptions = {}): Promise<Asked> {
   const { db, judge, config, log } = deps;
-  /** Whether the service is stopping (asked again after the request: it may have stopped it). */
+  const { closing, ceiling = 1, chargeUnsent = true } = opts;
+  /** Whether the service is stopping (asked again after the reads and after the request: it may have stopped either). */
   const stopping = (): boolean => closing?.aborted === true;
   if (judge === null || config.judge === null) return { answers: null, why: "no_judge", started: false };
   if (stopping()) return { answers: null, why: "closing", started: false };
   let day: string;
   try {
     day = siteDay(new Date(), config.siteTimezone);
-    if ((await ownerJudgementsUsed(db, deps.ownerId, day)) >= config.memory.judgePerOwnerDay) {
+    if ((await ownerJudgementsUsed(db, deps.ownerId, day)) >= ceiling * config.memory.judgePerOwnerDay) {
       log.debug({ metric: "judge_owner_limit" }, "an owner's memory checks of the day are used up: not judged");
       return { answers: null, why: "owner_limit", started: false };
     }
     // Memory takes at most its share of the site's day: the rest is for unasked replies.
-    if ((await judgementsOn(db, day)) >= config.memory.judgeShare * config.judge.dailyLimit) {
+    if ((await judgementsOn(db, day)) >= ceiling * config.memory.judgeShare * config.judge.dailyLimit) {
       log.debug({ metric: "judge_memory_share" }, "memory's share of the site's judgements of the day is used up: not judged");
       return { answers: null, why: "site_share", started: false };
     }
@@ -126,6 +141,7 @@ export async function askAllOutcome(deps: SortDeps, state: string, questions: re
     log.info({ metric: "judge_limit_check_failed", err }, "the judgement limit could not be read: not judged");
     return { answers: null, why: "limit_unread", started: false };
   }
+  if (stopping()) return { answers: null, why: "closing", started: false };
   const timeout = AbortSignal.timeout(config.judge.timeoutMs * Math.max(1, config.judge.channels.length));
   const deadline = closing ? AbortSignal.any([timeout, closing]) : timeout;
   count(db, `judge_memory_call_${purpose}`);
@@ -137,13 +153,17 @@ export async function askAllOutcome(deps: SortDeps, state: string, questions: re
     // No answer: the callers fail closed (or open, as they decide).
     failure = err;
   }
-  // Counted whatever came of the call; a failure of the count itself never changes the result.
-  await countJudgement(db, day).catch((err: unknown) => log.info({ metric: "judge_count_failed", err }, "a judgement could not be counted"));
-  await countOwner(db, deps.ownerId, day).catch((err: unknown) => log.info({ metric: "judge_count_failed", err }, "a judgement could not be counted"));
+  // Whether a request went out: an answer, or a JudgeError that says so; any other failure (an abort, a timeout) came while one was out.
+  const sent = answers !== null || !(failure instanceof JudgeError) || failure.sent;
+  // Counted whatever came of the call (unless it sent nothing and the caller asked so); a failure of the count never changes the result.
+  if (sent || chargeUnsent) {
+    await countJudgement(db, day).catch((err: unknown) => log.info({ metric: "judge_count_failed", err }, "a judgement could not be counted"));
+    await countOwner(db, deps.ownerId, day).catch((err: unknown) => log.info({ metric: "judge_count_failed", err }, "a judgement could not be counted"));
+  }
   if (answers !== null) return { answers, started: true };
-  if (stopping()) return { answers: null, why: "closing", started: true };
-  if (failure instanceof JudgeError && failure.reason === "busy") return { answers: null, why: "busy", started: false };
-  return { answers: null, why: "failed", started: true };
+  if (stopping()) return { answers: null, why: "closing", started: sent };
+  if (!sent && failure instanceof JudgeError && failure.reason === "busy") return { answers: null, why: "busy", started: false };
+  return { answers: null, why: "failed", started: sent };
 }
 
 /**
@@ -152,7 +172,7 @@ export async function askAllOutcome(deps: SortDeps, state: string, questions: re
  * key. `closing`, when given, ends a call under way as soon as it fires (no answer).
  */
 export async function askAll(deps: SortDeps, state: string, questions: readonly Question[], purpose: JudgePurpose, closing?: AbortSignal): Promise<Map<string, Answer> | null> {
-  return (await askAllOutcome(deps, state, questions, purpose, closing)).answers;
+  return (await askAllOutcome(deps, state, questions, purpose, closing === undefined ? {} : { closing })).answers;
 }
 
 async function ask(deps: SortDeps, state: string, question: Question, purpose: JudgePurpose, closing?: AbortSignal): Promise<Answer | null> {
