@@ -918,6 +918,28 @@ describe("session lifecycle", () => {
     expect(peekDraft("provider:new")).toBeNull();
   });
 
+  it("the terms form is the session's: a 409 account_changed on its submit, then another account confirmed with the terms still to accept, gives that account a fresh form (T2 fix 4, U2)", async () => {
+    const NOT_YET = { termsAccepted: false, termsRequired: true };
+    const getMe = vi.fn().mockResolvedValueOnce({ ...ANN, ...NOT_YET }).mockResolvedValueOnce({ ...BO, ...NOT_YET });
+    // The acceptance goes out as ann's, while the browser now sends bo's cookie: the service refuses it for the account it names.
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: "account_changed" }), { status: 409, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      mount(fakeApi({ getMe, acceptTerms: (body) => request("POST", "/api/me/terms", body) }));
+      expect(await screen.findByRole("heading", { name: "请确认条款" })).toBeTruthy();
+      tickAcceptance();
+      submit("同意并继续");
+      await waitFor(() => expect(getMe).toHaveBeenCalledTimes(2));
+      // bo's own form: nothing ticked, nothing being sent.
+      const button = await screen.findByRole("button", { name: "同意并继续" });
+      expect(button.disabled).toBe(false);
+      expect(screen.getByRole("checkbox", { name: ADULT_LABEL }).checked).toBe(false);
+      expect(screen.getByRole("checkbox", { name: AGREE_LABEL }).checked).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("an answer for another account anywhere (409 account_changed: the memory settings' GET /api/me among them) retires the layer at once and confirms who is signed in: their own layer, the app mounted again (T2 fix 3, S1)", async () => {
     const getMe = vi.fn().mockResolvedValueOnce(ANN).mockResolvedValueOnce(BO);
     mount(fakeApi({ getMe }));

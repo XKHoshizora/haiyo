@@ -211,7 +211,9 @@ export function AuthRoot({ api = routes, createLayer = createDataLayer, children
         </ChunkBoundary>
       );
     case "accept":
-      return <AcceptTerms api={api} onAccepted={accepted} onSignOut={signOut} />;
+      // The session's own form (its account and layer): another account confirmed while one was being sent gets a fresh one, never a
+      // form whose submit waits for ever on an answer refused for the account before (T2 fix 4, U2).
+      return <AcceptTerms key={`${accountId.current ?? ""}:${box.id}`} api={api} onAccepted={accepted} onSignOut={signOut} />;
     case "signin":
       return <SignIn api={api} expired={session.expired} onSignedIn={confirm} />;
     case "register":
