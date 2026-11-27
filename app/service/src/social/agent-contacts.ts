@@ -1,5 +1,5 @@
 import type { EndedRuns } from "../agents/group-leave.ts";
-import { dropRefusedCalls, lockActiveRuns, RUN_COLUMNS, standingCalls, toWireRun, type Announced, type RunRow } from "../agents/runs.ts";
+import { dropRefusedCalls, dropWaiting, lockActiveRuns, RUN_COLUMNS, standingCalls, toWireRun, type Announced, type RunRow } from "../agents/runs.ts";
 import { refusedInGroup } from "../agents/refusal.ts";
 import type { Config } from "../config.ts";
 import { ensureSocial, lockConversation } from "../conversations/store.ts";
@@ -119,28 +119,31 @@ async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed"
 
   // Every run row it may write, social and (unless `groups` is false) in groups, locked first as ONE set in ascending run id (runs.ts
   // `lockActiveRuns`: the one order of every write of several active runs). `groupAgents` names its parameters as `runsIn` does.
+  // It writes those rows only: a run made active after this statement is held to the access decision at its own begin (T2 fix 3, S2).
   const inGroup = o.groups === false ? "false" : `${groupAgents.sql} and exists (select 1 from conversations rc where rc.id = r.conversation_id and rc.type = 'group')`;
-  await lockActiveRuns(t, `r.purpose = 'reply' and exists (select 1 from principals ag where ag.id = r.agent_id and ((${runsIn.sql}) or (${inGroup})))`, runsIn.params);
+  const locked = await lockActiveRuns(t, `r.purpose = 'reply' and exists (select 1 from principals ag where ag.id = r.agent_id and ((${runsIn.sql}) or (${inGroup})))`, runsIn.params);
+  const mine = `r.id = any($${runsIn.params.length + 1}::uuid[])`;
   const queued = await t.query<RunRow & { conversation_id: string; owner_id: string }>(
     `update agent_runs r set status = 'cancelled', error = 'access_ended', finished_at = now()
        from principals ag
-      where ag.id = r.agent_id and r.purpose = 'reply' and r.status = 'queued' and ${runsIn.sql}
+      where ag.id = r.agent_id and ${mine} and r.status = 'queued' and ${runsIn.sql}
       returning ${RUN_COLUMNS}, r.conversation_id, r.owner_id`,
-    runsIn.params,
+    [...runsIn.params, locked],
   );
   const running = await t.query<{ id: string }>(
     `update agent_runs r set interrupted = coalesce(r.interrupted, 'access_ended')
        from principals ag
-      where ag.id = r.agent_id and r.purpose = 'reply' and r.status = 'running' and ${runsIn.sql}
+      where ag.id = r.agent_id and ${mine} and r.status = 'running' and ${runsIn.sql}
       returning r.id`,
-    runsIn.params,
+    [...runsIn.params, locked],
   );
-  // The calls waiting there for those Agents: the visitor's, whose access ended (a social conversation has no other caller).
-  await t.query(`delete from deferred_calls r using principals ag where ag.id = r.agent_id and ${runsIn.sql}`, runsIn.params);
+  // The calls waiting there for those Agents: the visitor's, whose access ended (a social conversation has no other caller). After the
+  // run rows, in their key's order (`dropWaiting`).
+  await dropWaiting(t, `exists (select 1 from principals ag where ag.id = r.agent_id and ${runsIn.sql})`, runsIn.params);
   const cancelled: Announced[] = queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId: r.conversation_id, run: toWireRun(r) }));
   const stopped = running.rows.map((r) => r.id);
   // (`groups: false`, an unfriend: in a group anyone may @ the Agent, friend or not, so no call of anyone is taken out of a group reply.)
-  const inGroups: EndedRuns = o.groups === false ? { cancelled: [], running: [] } : await endGroupCalls(t, groupAgents, o.eager);
+  const inGroups: EndedRuns = o.groups === false ? { cancelled: [], running: [] } : await endGroupCalls(t, groupAgents, o.eager, locked);
   const idle = inGroups.idle ?? [];
   return { cancelled: [...cancelled, ...inGroups.cancelled], running: [...stopped, ...inGroups.running], ...(idle.length > 0 ? { idle } : {}), ended: ended.rowCount ?? 0 };
 }
@@ -164,24 +167,26 @@ async function endGrantsIn(t: Tx, scope: GrantScope, reason: "left" | "narrowed"
  * block of a person): a reply that has not begun, and a call that waits, are left to `begin`'s own recheck and to the one where it is
  * taken (runs.ts `takeDeferred`), the same decision at those moments (agents-block-recheck.test.ts).
  */
-async function endGroupCalls(t: Tx, agents: { sql: string; params: unknown[] }, eager: boolean): Promise<EndedRuns> {
+async function endGroupCalls(t: Tx, agents: { sql: string; params: unknown[] }, eager: boolean, locked: readonly string[]): Promise<EndedRuns> {
   const out: EndedRuns = { cancelled: [], running: [], idle: [] };
   if (eager) {
-    await t.query(
-      `delete from deferred_calls r
-        using principals ag, conversations c, messages m, principals p
-        where ag.id = r.agent_id and c.id = r.conversation_id and c.type = 'group' and m.conversation_id = r.conversation_id and m.seq = r.message_seq
-          and p.id = m.sender_id and ${agents.sql}
-          and (${refusedInGroup("p.id", "r.agent_id")} or (r.caller_id is not null and ${refusedInGroup("r.caller_id", "r.agent_id")}))`,
+    await dropWaiting(
+      t,
+      `exists (select 1 from principals ag, conversations c, messages m, principals p
+                where ag.id = r.agent_id and c.id = r.conversation_id and c.type = 'group' and m.conversation_id = r.conversation_id
+                  and m.seq = r.message_seq and p.id = m.sender_id and ${agents.sql}
+                  and (${refusedInGroup("p.id", "r.agent_id")} or (r.caller_id is not null and ${refusedInGroup("r.caller_id", "r.agent_id")})))`,
       agents.params,
     );
   }
+  // The group runs among those `endGrantsIn` locked (`locked`, held already): none made active since is looked at here (T2 fix 3, S2).
   const found = await t.query<{ id: string; status: "queued" | "running"; admitted: boolean; owner_id: string; agent_id: string; conversation_id: string }>(
     `select r.id, r.status, r.model is not null as admitted, r.owner_id, r.agent_id, r.conversation_id
        from agent_runs r join principals ag on ag.id = r.agent_id join conversations c on c.id = r.conversation_id and c.type = 'group'
       where r.purpose = 'reply' and r.status in ('queued', 'running') and r.whisper_id is null and ${agents.sql}
-      order by r.id for update of r`,
-    agents.params,
+        and r.id = any($${agents.params.length + 1}::uuid[])
+      order by r.id`,
+    [...agents.params, [...locked]],
   );
   for (const run of found.rows) {
     const inFlight = run.status === "running" && run.admitted;
@@ -218,23 +223,22 @@ async function endGroupCalls(t: Tx, agents: { sql: string; params: unknown[] }, 
  */
 export async function interruptOthersRuns(t: Tx, agentId: string): Promise<EndedRuns> {
   await t.query("select 1 from agents where principal_id = $1 for update", [agentId]);
-  await lockActiveRuns(t, "r.agent_id = $1 and r.purpose = 'reply' and r.lane in ('others', 'proactive')", [agentId]);
+  // Those rows only: a run made active after the lock meets the disable at its begin (`refusedInGroup`, `runAccess`; T2 fix 3, S2).
+  const ids = await lockActiveRuns(t, "r.agent_id = $1 and r.purpose = 'reply' and r.lane in ('others', 'proactive')", [agentId]);
   const queued = await t.query<RunRow & { conversation_id: string; owner_id: string }>(
     `update agent_runs r set status = 'cancelled', finished_at = now(),
             -- (a group reply ends quietly, with no error; access_ended is a social run's reason)
             error = case when exists (select 1 from conversations rc where rc.id = r.conversation_id and rc.type = 'agent_social') then 'access_ended' end
-      where r.agent_id = $1 and r.purpose = 'reply' and r.status = 'queued' and r.lane in ('others', 'proactive')
+      where r.id = any($1::uuid[]) and r.status = 'queued'
       returning ${RUN_COLUMNS}, r.conversation_id, r.owner_id`,
-    [agentId],
+    [ids],
   );
   const running = await t.query<{ id: string }>(
-    `update agent_runs r set interrupted = coalesce(r.interrupted, 'access_ended')
-      where r.agent_id = $1 and r.purpose = 'reply' and r.status = 'running' and r.lane in ('others', 'proactive')
-      returning r.id`,
-    [agentId],
+    "update agent_runs r set interrupted = coalesce(r.interrupted, 'access_ended') where r.id = any($1::uuid[]) and r.status = 'running' returning r.id",
+    [ids],
   );
-  // Someone else's calls waiting for it go (A-4 review m2); the owner's own wait on.
-  await t.query("delete from deferred_calls where agent_id = $1 and lane <> 'own'", [agentId]);
+  // Someone else's calls waiting for it go (A-4 review m2); the owner's own wait on. After the run rows, in their key's order.
+  await dropWaiting(t, "r.agent_id = $1 and r.lane <> 'own'", [agentId]);
   return {
     cancelled: queued.rows.map((r) => ({ ownerId: r.owner_id, conversationId: r.conversation_id, run: toWireRun(r) })),
     running: running.rows.map((r) => r.id),

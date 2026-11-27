@@ -898,6 +898,98 @@ describe("one order for every bulk lock of active run rows: ascending run id (T2
     ]);
     await db.query("update agent_runs set status = 'cancelled', finished_at = now() where id = $1", [first]);
   });
+
+  /** A call waiting for `agentId` in `conv` at seq `seq`, someone else's (`callerId`). */
+  const waitingCall = (agentId: string, conv: string, seq: number, ownerId: string, callerId: string) =>
+    db.query(
+      "insert into deferred_calls (agent_id, conversation_id, message_seq, owner_id, lane, caller_id, triggered_by) values ($1, $2, $3, $4, 'others', $5, 'human')",
+      [agentId, conv, seq, ownerId, callerId],
+    );
+  const lockWaiting = (agentId: string, conv: string, seq: number): [string, unknown[]] => [
+    "select 1 from deferred_calls where agent_id = $1 and conversation_id = $2 and message_seq = $3 for update",
+    [agentId, conv, seq],
+  ];
+
+  it("the switch-off sweep takes the run rows before the calls waiting behind them (T2 fix 3, S2): while another transaction holds a queued social reply, as a disable would, the call waiting behind it is not held by the sweep", async () => {
+    const w = await world();
+    const { conversationId: social } = await seedSocial(app, { owner: w.owner, agentId: w.agent.id, visitor: w.mia });
+    const run = runIdAt(true);
+    await queuedRun(run, social, w.agent.id, w.owner.id, w.mia.id);
+    await waitingCall(w.agent.id, social, 1, w.owner.id, w.mia.id);
+    expect(await inOrder(lockRun(run), lockWaiting(w.agent.id, social, 1), () => app.agentPort.claimNext())).toBeNull();
+    expect(await statusOf([run])).toEqual([{ status: "cancelled", error: "access_ended" }]);
+    expect(await waiting(w.agent.id, social)).toEqual([]);
+  });
+
+  it("calls waiting are dropped in one order too, their key's (T2 fix 3, S2): while another transaction holds the first, the sweep holds none of the others", async () => {
+    const w = await world();
+    const convs = new Map<string, string>();
+    for (const visitor of [w.mia, w.ned]) convs.set((await seedSocial(app, { owner: w.owner, agentId: w.agent.id, visitor })).conversationId, visitor.id);
+    // The call that sorts last made first: a delete in no order of its own meets it first.
+    const [lowConv, highConv] = [...convs.keys()].sort();
+    await waitingCall(w.agent.id, highConv!, 1, w.owner.id, convs.get(highConv!)!);
+    await waitingCall(w.agent.id, lowConv!, 1, w.owner.id, convs.get(lowConv!)!);
+    expect(await inOrder(lockWaiting(w.agent.id, lowConv!, 1), lockWaiting(w.agent.id, highConv!, 1), () => app.agentPort.claimNext())).toBeNull();
+    expect(await waiting(w.agent.id, lowConv!)).toEqual([]);
+    expect(await waiting(w.agent.id, highConv!)).toEqual([]);
+  });
+
+  it("an ending of access writes only the runs its one ordered lock took (T2 fix 3, S2): a reply of an Agent in scope made active after it — a lower run id — is left to its own begin, and the ending never waits on it", async () => {
+    const w = await world();
+    const { conversationId: social } = await seedSocial(app, { owner: w.owner, agentId: w.agent.id, visitor: w.mia });
+    const [low, high] = [runIdAt(true), runIdAt(false)];
+    // The Agent's reply to mia in their social conversation, and a call of hers waiting behind it.
+    await queuedRun(high, social, w.agent.id, w.owner.id, w.mia.id);
+    await waitingCall(w.agent.id, social, 1, w.owner.id, w.mia.id);
+    const first = await db.pool.connect();
+    const second = await db.pool.connect();
+    try {
+      await first.query("begin");
+      await first.query("set local lock_timeout = '5s'");
+      const pid = await backendPid(first);
+      // Holding the waiting call: the ending, once it has locked its runs, waits here before it looks at the groups.
+      await first.query(...lockWaiting(w.agent.id, social, 1));
+      const ending = db.tx((t) => endGrants(t, { agentId: w.agent.id, subjectIds: [w.mia.id] }, "left"));
+      ending.catch(() => {});
+      expect(await waitersBehind(db, pid)).toBe(true);
+      // Meanwhile a reply of the Agent in the group becomes active (a relay, which locks no Agent's row), with a lower run id; another
+      // transaction holds it and asks for the social one, which the ending holds.
+      await queuedRun(low, w.g, w.agent.id, w.owner.id, w.mia.id);
+      await second.query("begin");
+      await second.query("set local lock_timeout = '5s'");
+      await second.query(...lockRun(low));
+      const asking = second.query(...lockRun(high));
+      asking.catch(() => {});
+      expect(await waitersBehind(db, pid, 2)).toBe(true);
+      await first.query("commit");
+      await ending;
+      await asking;
+      await second.query("commit");
+    } finally {
+      for (const c of [first, second]) {
+        await c.query("rollback").catch(() => {});
+        c.release();
+      }
+    }
+    // The social reply ended; the group one, made after the ending's lock, is left as it was (its begin holds it to the rule then).
+    expect(await statusOf([low, high])).toEqual([
+      { status: "queued", error: null },
+      { status: "cancelled", error: "access_ended" },
+    ]);
+    await db.query("update agent_runs set status = 'cancelled', finished_at = now() where id = $1", [low]);
+  });
+
+  it("the switch off and nothing to end, a claim's sweep is one statement and no transaction (T2 fix 3, S2)", async () => {
+    await db.query("update agent_runs r set status = 'cancelled', finished_at = now() from conversations c where c.id = r.conversation_id and c.type = 'agent_social' and r.status = 'queued'");
+    await db.query("delete from deferred_calls d using conversations c where c.id = d.conversation_id and c.type = 'agent_social'");
+    const tx = vi.spyOn(app.deps.db, "tx");
+    try {
+      expect(await app.agentPort.claimNext()).toBeNull();
+      expect(tx).not.toHaveBeenCalled();
+    } finally {
+      tx.mockRestore();
+    }
+  });
 });
 
 describe("the prompt names the calls a reply answers (design [C7])", () => {

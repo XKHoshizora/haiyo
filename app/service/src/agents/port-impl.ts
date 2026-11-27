@@ -76,6 +76,7 @@ import {
   budgetReachedWith,
   consumeIdle,
   dropRefusedCalls,
+  dropWaiting,
   idlePairs,
   lockActiveRuns,
   nextOf,
@@ -516,16 +517,23 @@ export class DbAgentPort implements AgentPort {
    * disable or an ending of access locking some of the same rows never waits on it in a circle. It needs no Agent's row.
    */
   private async endQueuedSocial(): Promise<void> {
+    const queuedSocial = "r.purpose = 'reply' and r.status = 'queued' and exists (select 1 from conversations c where c.id = r.conversation_id and c.type = 'agent_social')";
+    const waitingSocial = "exists (select 1 from conversations c where c.id = r.conversation_id and c.type = 'agent_social')";
+    // Nothing to end (what nearly every claim finds while the switch is off): one statement, no transaction, no lock (T2 fix 3, S2).
+    const { rows: found } = await this.deps.db.query<{ found: boolean }>(
+      `select exists (select 1 from agent_runs r where ${queuedSocial}) or exists (select 1 from deferred_calls r where ${waitingSocial}) as found`,
+    );
+    if (found[0]?.found !== true) return;
     const rows = await this.deps.db.tx(async (t) => {
-      await t.query("delete from deferred_calls d using conversations c where c.id = d.conversation_id and c.type = 'agent_social'");
-      const queuedSocial = "r.purpose = 'reply' and r.status = 'queued' and exists (select 1 from conversations c where c.id = r.conversation_id and c.type = 'agent_social')";
-      await lockActiveRuns(t, queuedSocial, []);
-      return (
-        await t.query<RunRow & { owner_id: string; conversation_id: string }>(
-          `update agent_runs r set status = 'cancelled', error = 'access_ended', finished_at = now() where ${queuedSocial}
-            returning ${RUN_COLUMNS}, r.owner_id, r.conversation_id`,
-        )
-      ).rows;
+      // The run rows first, then the calls waiting behind them (the lock order, as a disable takes them: T2 fix 3, S2).
+      const ids = await lockActiveRuns(t, queuedSocial, []);
+      const ended = await t.query<RunRow & { owner_id: string; conversation_id: string }>(
+        `update agent_runs r set status = 'cancelled', error = 'access_ended', finished_at = now() where r.id = any($1::uuid[]) and r.status = 'queued'
+          returning ${RUN_COLUMNS}, r.owner_id, r.conversation_id`,
+        [ids],
+      );
+      await dropWaiting(t, waitingSocial, []);
+      return ended.rows;
     });
     for (const row of rows) this.announce({ ownerId: row.owner_id, conversationId: row.conversation_id, run: toWireRun(row) });
   }

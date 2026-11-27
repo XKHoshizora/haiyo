@@ -472,14 +472,14 @@ export async function interruptRuns(
   agent: AgentRow,
   reason: "agent_paused" | "agent_deleted",
 ): Promise<{ cancelled: Announced[]; running: string[] }> {
-  // Nothing follows these: an Agent paused or deleted answers nothing.
-  await lockActiveRuns(t, "r.agent_id = $1", [agent.id]);
+  // Nothing follows these: an Agent paused or deleted answers nothing. (A run made active after the lock is ended by its `begin`.)
+  const ids = await lockActiveRuns(t, "r.agent_id = $1", [agent.id]);
   const queued = await t.query<RunRow & { conversation_id: string }>(
     `update agent_runs as r set status = 'cancelled', error = $2, finished_at = now()
-      where r.agent_id = $1 and r.status = 'queued' returning ${RUN_COLUMNS}, r.conversation_id`,
-    [agent.id, reason],
+      where r.id = any($1::uuid[]) and r.status = 'queued' returning ${RUN_COLUMNS}, r.conversation_id`,
+    [ids, reason],
   );
-  const running = await t.query<{ id: string }>("update agent_runs set interrupted = $2 where agent_id = $1 and status = 'running' returning id", [agent.id, reason]);
+  const running = await t.query<{ id: string }>("update agent_runs set interrupted = $2 where id = any($1::uuid[]) and status = 'running' returning id", [ids, reason]);
   await dropDeferred(t, { agentId: agent.id });
   return {
     cancelled: queued.rows.map((r) => ({ ownerId: agent.ownerId, conversationId: r.conversation_id, run: toWireRun(r) })),
@@ -499,15 +499,15 @@ export async function interruptRuns(
  * as `interruptRuns` does, the cancelled runs to announce and the newly marked ones to stop.
  */
 export async function endWhatPauseMissed(t: Tx, agent: AgentRow): Promise<{ cancelled: Announced[]; running: string[] }> {
-  await lockActiveRuns(t, "r.agent_id = $1", [agent.id]);
+  const ids = await lockActiveRuns(t, "r.agent_id = $1", [agent.id]);
   const queued = await t.query<RunRow & { conversation_id: string }>(
     `update agent_runs as r set status = 'cancelled', error = 'agent_paused', finished_at = now()
-      where r.agent_id = $1 and r.status = 'queued' returning ${RUN_COLUMNS}, r.conversation_id`,
-    [agent.id],
+      where r.id = any($1::uuid[]) and r.status = 'queued' returning ${RUN_COLUMNS}, r.conversation_id`,
+    [ids],
   );
   const claimed = await t.query<{ id: string }>(
-    "update agent_runs set interrupted = 'agent_paused' where agent_id = $1 and status = 'running' and interrupted is null returning id",
-    [agent.id],
+    "update agent_runs set interrupted = 'agent_paused' where id = any($1::uuid[]) and status = 'running' and interrupted is null returning id",
+    [ids],
   );
   await dropDeferred(t, { agentId: agent.id });
   return {
@@ -834,15 +834,39 @@ export const DEFERRED_PER_PAIR = 8;
 type Pair = { active: { id: string; foldable: boolean; caller: Caller } | null; waiting: number };
 
 /**
- * Locks the active reply runs (queued or running) `where` names (`r`: `agent_runs`), `for update`, in ascending run id: THE order
- * every transaction keeps that locks more than one active run row at once (the lock order; T2 fix 1, F6; T2 fix 2, R3) — a message
- * calling several Agents (`pairsOf`), a halt, a pause, a delete, a removal from a group, an interjection, an ending of access (social
- * and group runs as one set; an unfriend's after every Agent's row), the operator's disable, the sweep of queued social replies with
- * the switch off — so two of them never hold one each of two rows the other wants. Taken before such a transaction writes any of them,
- * after the `agents` rows it needs (ascending id).
+ * Locks the active reply runs (queued or running) `where` names (`r`: `agent_runs`), `for update`, in ascending run id, in ONE
+ * statement, and returns their ids: THE way every transaction takes more than one active run row at once (the lock order; T2 fix 1,
+ * F6; T2 fix 2, R3; T2 fix 3, S2) — a halt, a pause, a delete, a resume, a removal from a group, an interjection, an ending of access
+ * (social and group runs as one set; an unfriend's after every Agent's row), the operator's disable, the sweep of queued social
+ * replies with the switch off. Taken after the `agents` rows the transaction needs (ascending id) and before any run row is written;
+ * then it writes those rows ONLY (`r.id = any(ids)`), never a row that became active after this statement — such a row is held to
+ * the rule of its run at its `begin`, admission and post, which see this transaction committed. So no such transaction ever waits
+ * for a run row after its first: two of them never hold one each of two rows the other wants (`pairsOf`, a message calling several
+ * Agents, is one sorted statement too). The calls waiting come after the run rows (`dropWaiting`).
  */
-export async function lockActiveRuns(t: Tx, where: string, params: readonly unknown[]): Promise<void> {
-  await t.query(`select 1 from agent_runs r where r.status in ('queued', 'running') and (${where}) order by r.id for update of r`, [...params]);
+export async function lockActiveRuns(t: Tx, where: string, params: readonly unknown[]): Promise<string[]> {
+  const { rows } = await t.query<{ id: string }>(
+    `select r.id from agent_runs r where r.status in ('queued', 'running') and (${where}) order by r.id for update of r`,
+    [...params],
+  );
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Deletes the calls waiting (`deferred_calls`, alias `r`) that `where` names, locked first in their key's order (Agent, conversation,
+ * seq) in one statement: the one way several of them are dropped, after the run rows a transaction writes (`lockActiveRuns`), so two
+ * endings that drop some of the same calls never hold one each of two the other wants (T2 fix 3, S2).
+ */
+export async function dropWaiting(t: Tx, where: string, params: readonly unknown[]): Promise<void> {
+  await t.query(
+    `with doomed as materialized (
+       select r.agent_id, r.conversation_id, r.message_seq from deferred_calls r where ${where}
+        order by r.agent_id, r.conversation_id, r.message_seq for update of r
+     )
+     delete from deferred_calls x using doomed d
+      where x.agent_id = d.agent_id and x.conversation_id = d.conversation_id and x.message_seq = d.message_seq`,
+    [...params],
+  );
 }
 
 /**
@@ -924,10 +948,10 @@ async function deferCall(t: Tx, agent: RunAgent, conversationId: string, seq: nu
  */
 export async function dropDeferred(t: Tx, scope: { agentId: string } | { conversationId: string; agentIds?: readonly string[] }): Promise<void> {
   if ("agentId" in scope) {
-    await t.query("delete from deferred_calls where agent_id = $1", [scope.agentId]);
+    await dropWaiting(t, "r.agent_id = $1", [scope.agentId]);
     return;
   }
-  await t.query("delete from deferred_calls where conversation_id = $1 and ($2::uuid[] is null or agent_id = any($2::uuid[]))", [scope.conversationId, scope.agentIds ? [...scope.agentIds] : null]);
+  await dropWaiting(t, "r.conversation_id = $1 and ($2::uuid[] is null or r.agent_id = any($2::uuid[]))", [scope.conversationId, scope.agentIds ? [...scope.agentIds] : null]);
 }
 
 /**
@@ -1656,17 +1680,16 @@ export async function haltAgents(t: Tx, conversationId: string, actorId: string,
   );
   const agents = new Map<string, AgentRow>();
   for (const { agent_id } of waiting.rows) agents.set(agent_id, await lockAgent(t, agent_id, conversationId));
-  await lockActiveRuns(t, "r.conversation_id = $1 and (r.triggered_by = 'agent' or r.lane = 'proactive')", [conversationId]);
+  const ids = await lockActiveRuns(t, "r.conversation_id = $1 and (r.triggered_by = 'agent' or r.lane = 'proactive')", [conversationId]);
   const queued = await t.query<RunRow & { owner_id: string; agent_id: string; covers: string | null }>(
     `update agent_runs as r set status = 'cancelled', error = 'halted', finished_at = now()
-      where r.conversation_id = $1 and r.status = 'queued' and (r.triggered_by = 'agent' or r.lane = 'proactive')
+      where r.id = any($1::uuid[]) and r.status = 'queued'
       returning ${RUN_COLUMNS}, r.owner_id, r.agent_id, r.covers_seq::text as covers`,
-    [conversationId],
+    [ids],
   );
   const running = await t.query<{ id: string }>(
-    `update agent_runs set interrupted = 'halted'
-      where conversation_id = $1 and status = 'running' and (triggered_by = 'agent' or lane = 'proactive') and interrupted is null returning id`,
-    [conversationId],
+    "update agent_runs set interrupted = 'halted' where id = any($1::uuid[]) and status = 'running' and interrupted is null returning id",
+    [ids],
   );
   const notice = already ? null : await appendSystem(t, conversationId, { event: "agents_halted", actorId });
   // Then what waited, after the notice (what an Agent asked before it is not answered after it). Their owners' accounts first, all
@@ -1809,19 +1832,16 @@ export async function triggerInSocial(t: Tx, lock: WriteLock, message: StoredMes
  * before the running ones: a run claimed in between is seen as one or the other (as `endGrants` orders them).
  */
 async function interjection(t: Tx, conversationId: string, agentIds: readonly string[]): Promise<Triggered> {
-  await lockActiveRuns(t, "r.conversation_id = $1 and r.agent_id = any($2::uuid[]) and r.purpose = 'reply'", [conversationId, [...agentIds]]);
+  const ids = await lockActiveRuns(t, "r.conversation_id = $1 and r.agent_id = any($2::uuid[]) and r.purpose = 'reply'", [conversationId, [...agentIds]]);
   const queued = await t.query<RunRow & { owner_id: string }>(
-
     `update agent_runs r set status = 'cancelled', error = 'owner_spoke', finished_at = now()
-      where r.conversation_id = $1 and r.agent_id = any($2::uuid[]) and r.purpose = 'reply' and r.status = 'queued'
+      where r.id = any($1::uuid[]) and r.status = 'queued'
       returning ${RUN_COLUMNS}, r.owner_id`,
-    [conversationId, [...agentIds]],
+    [ids],
   );
   const running = await t.query<{ id: string }>(
-    `update agent_runs r set interrupted = coalesce(r.interrupted, 'owner_spoke')
-      where r.conversation_id = $1 and r.agent_id = any($2::uuid[]) and r.purpose = 'reply' and r.status = 'running'
-      returning r.id`,
-    [conversationId, [...agentIds]],
+    "update agent_runs r set interrupted = coalesce(r.interrupted, 'owner_spoke') where r.id = any($1::uuid[]) and r.status = 'running' returning r.id",
+    [ids],
   );
   await dropDeferred(t, { conversationId, agentIds });
   return {
