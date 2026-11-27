@@ -19,8 +19,10 @@ export interface SortDeps {
   log: Pick<FastifyBaseLogger, "info" | "debug">;
 }
 
+// The sort question: whether a note may live outside the vault, where an Agent uses it in groups and in one-to-one chats with people
+// the owner lets in. The owner's wording is of 2026-11-28, calibrated on the real judgement model (docs/acceptance/memory/calibration.md).
 const OWNER_INSTRUCTIONS =
-  "这是一个人的 AI 助手记下的一条关于主人的笔记，可能用任何语言写。这条内容属于日常偏好或习惯（比如饮食口味、作息、称呼、喜欢的风格、常用的工具），即使被主人的朋友、同事、群友知道也完全无妨。凡是涉及健康、钱、工作变动、感情和家庭矛盾、对别人的评价、行踪住址、账号密码、尚未公开的计划，或者拿不准的，都不算。";
+  "这是一个人的 AI 助手记下的一条关于主人的笔记，可能用任何语言写。这条内容属于日常偏好或习惯（比如饮食口味、作息、称呼、喜欢的风格、常用的工具），即使被一个主人并不熟、只是同意对方和这个助手单独聊天的人知道也完全无妨。凡是涉及健康、钱、工作变动、感情和家庭矛盾、对别人的评价、信仰和立场、行踪住址、能让人找到或认出主人的信息（联系方式、用户名、固定的时间地点、所属的团体、身边人的名字）、账号密码、尚未公开的计划，或者拿不准的，都不算。";
 const SELF_INSTRUCTIONS =
   "这是一个 AI 助手给自己记的一条笔记，可能用任何语言写。这条内容只是它做事的方式或习惯（比如回答的长短、先说什么、用什么格式、推荐时注意什么），不透露主人的任何私事，即使被主人的朋友、同事、群友看到也完全无妨。凡是提到主人的健康、钱、工作变动、感情和家庭、对别人的评价、行踪住址、账号密码、未公开的计划，或者拿不准的，都不算。";
 const DUPLICATE_INSTRUCTIONS =

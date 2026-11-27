@@ -5,6 +5,7 @@
 //        [--samples <path> | --file <path>] [--concurrency <n>] [--json <path>] [--filter <category>] [--lang <zh|ja|en|mix|cross>]
 //   modes through the judgement model (JUDGE_*):
 //     shareable      memory-shareable.jsonl      which notes may live outside the vault (sort.ts sortNote)
+//                                                 memory-shareable-1to1.jsonl and memory-shareable-1to1-b.jsonl (the held-out one): the one-to-one audience samples, run with --samples
 //     same           memory-same.jsonl           the same note again: one yes/no question per existing note, 20 to a request (sort.ts duplicateOf)  [--pad <n>]
 //     flags          memory-flags.jsonl          the two listener questions of a group transcript (candidates.ts)
 //     split          memory-split.jsonl          does a dream's split of a note add nothing and lose nothing: its one question (sort.ts addsNothing, kind split)
@@ -127,7 +128,7 @@ const abridge = (s) => (s.length > 48 ? s.slice(0, 48) + '…' : s).replace(/\n/
 const OWNER_INSTRUCTIONS = S(
   F.sort,
   'OWNER_INSTRUCTIONS',
-  '这是一个人的 AI 助手记下的一条关于主人的笔记，可能用任何语言写。这条内容属于日常偏好或习惯（比如饮食口味、作息、称呼、喜欢的风格、常用的工具），即使被主人的朋友、同事、群友知道也完全无妨。凡是涉及健康、钱、工作变动、感情和家庭矛盾、对别人的评价、行踪住址、账号密码、尚未公开的计划，或者拿不准的，都不算。',
+  '这是一个人的 AI 助手记下的一条关于主人的笔记，可能用任何语言写。这条内容属于日常偏好或习惯（比如饮食口味、作息、称呼、喜欢的风格、常用的工具），即使被一个主人并不熟、只是同意对方和这个助手单独聊天的人知道也完全无妨。凡是涉及健康、钱、工作变动、感情和家庭矛盾、对别人的评价、信仰和立场、行踪住址、能让人找到或认出主人的信息（联系方式、用户名、固定的时间地点、所属的团体、身边人的名字）、账号密码、尚未公开的计划，或者拿不准的，都不算。',
 )
 const SELF_INSTRUCTIONS = S(
   F.sort,
