@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { siteDay } from "../src/accounts/store.ts";
 import type { Db } from "../src/db.ts";
 import { JudgeError, type Answer, type Judge, type Question } from "../src/judge/client.ts";
+import { startNoteJudge } from "../src/memory/judge.ts";
 import { PERSONA_ASKED, personaSentences, runPersonaAid, sentenceSpan, type Claimed } from "../src/memory/persona-aid.ts";
 import { api, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -365,22 +366,64 @@ describe("the persona aid's worker", () => {
     }
   });
 
-  it("the worker claims one Agent at a time, just before it reads it: while the first is asked, the next is not stamped (fix 1, F3)", async () => {
+  it("the worker claims one Agent at a time, just before it reads it: while the first is asked, the next is not stamped (fix 1, F3; fix 2, G4)", async () => {
     await clearBacklog();
     const first = await world(FACT);
     const second = await world(FACT2);
     const [a, b] = first.owner.id < second.owner.id ? [first, second] : [second, first];
-    judge.answer(() => "hang");
-    const running = aid();
-    while (judge.calls.length === 0) await new Promise((r) => setTimeout(r, 5));
-    expect((await personaOf(a.agent.id)).persona_checked_version).toBe(1);
-    expect((await personaOf(b.agent.id)).persona_checked_version).toBe(0);
-    // The hung request times out (a failed request: that read ends, stamped); the next owner's is then claimed and read.
     judge.answer(scoring({ [FACT]: 0.9, [FACT2]: 0.9 }));
-    expect(await running).toBe(2);
+    // The first request is held by the test until both stamps are read (no timeout decides it).
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    const ask = judge.ask.bind(judge);
+    let held = 0;
+    judge.ask = async (state, questions, signal) => {
+      if (++held === 1) await gate;
+      return ask(state, questions, held === 1 ? undefined : signal);
+    };
+    try {
+      const running = aid();
+      while (held === 0) await new Promise((r) => setTimeout(r, 5));
+      expect((await personaOf(a.agent.id)).persona_checked_version).toBe(1);
+      expect((await personaOf(b.agent.id)).persona_checked_version).toBe(0);
+      open();
+      expect(await running).toBe(2);
+    } finally {
+      judge.ask = ask;
+    }
     expect((await personaOf(b.agent.id)).persona_checked_version).toBe(1);
-    expect(await cardsOf(a.agent.conversationId)).toEqual([]);
+    expect((await cardsOf(a.agent.conversationId)).length).toBe(1);
     expect((await cardsOf(b.agent.conversationId)).length).toBe(1);
+  });
+
+  it("closed while a claim is out: the Agent claimed is given back before anything is asked (fix 2, G3)", async () => {
+    await clearBacklog();
+    for (const how of ["close", "closing"] as const) {
+      const w = await world(FACT);
+      const closing = new AbortController();
+      let worker!: ReturnType<typeof startNoteJudge>;
+      let closed: Promise<void> | null = null;
+      // The claim's statement returns; before the worker goes on, it is closed (or the service's stop fires).
+      const claiming = new Proxy(db, {
+        get(target, prop, receiver) {
+          if (prop !== "query") return Reflect.get(target, prop, receiver);
+          return async (sql: string, ...rest: unknown[]) => {
+            const result = await (target.query as (...a: unknown[]) => Promise<unknown>)(sql, ...rest);
+            if (/update agents a set persona_checked_version = a.persona_version/.test(sql)) {
+              if (how === "close") closed = worker.close();
+              else closing.abort();
+            }
+            return result;
+          };
+        },
+      }) as Db;
+      worker = startNoteJudge({ db: claiming, config: app.deps.config, judge, log: app.log, conversations: app.deps.conversations, closing: closing.signal }, { timer: false });
+      expect([how, await worker.runOnce()]).toEqual([how, 0]);
+      await (closed ?? worker.close());
+      expect([how, (await personaOf(w.agent.id)).persona_checked_version]).toEqual([how, 0]);
+      expect(judge.calls).toHaveLength(0);
+      await clearBacklog();
+    }
   });
 
   it("the memory chat model and its allowance play no part: a spent memory allowance still reads the persona", async () => {
@@ -503,7 +546,11 @@ describe("why there is no answer, and what the aid does with it (round 1, A2)", 
     expect(await stamp(d.agent)).toBe(0);
     expect(await ownerUsedOf(d.agent.ownerId)).toBe(0);
     expect(Number((await db.query<{ n: string }>("select coalesce(sum(calls), 0)::text as n from judge_usage")).rows[0]!.n)).toBe(siteBefore);
-    for (const x of [a, b, d, e]) expect(await cardsOf(x.conversationId)).toEqual([]);
+    // A channel found no place and none sent anything, whatever the last one's reason (fix 2, G2): given back too.
+    const g = await claimed();
+    expect(await run({ ask: async () => Promise.reject(new JudgeError("key_unset", false, true)) }, g.agent)).toBe(0);
+    expect(await stamp(g.agent)).toBe(0);
+    for (const x of [a, b, d, e, g]) expect(await cardsOf(x.conversationId)).toEqual([]);
   });
 
   it("kept as read: no judge; the owner's or the site's half reached while asking (what was answered still counts, nothing more is asked, cut); a request sent and failed, also busy on a later channel; every key unset", async () => {

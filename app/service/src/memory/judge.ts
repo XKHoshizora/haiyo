@@ -3,7 +3,7 @@ import type { Config } from "../config.ts";
 import type { ConversationEvents } from "../conversations/events.ts";
 import type { Db } from "../db.ts";
 import type { Judge } from "../judge/client.ts";
-import { runPersonaAid, type Claimed } from "./persona-aid.ts";
+import { releasePersona, runPersonaAid, type Claimed } from "./persona-aid.ts";
 import type { Hub } from "../sync/hub.ts";
 
 /**
@@ -79,6 +79,11 @@ export function startNoteJudge(deps: NoteJudgeDeps, opts: { timer?: false } = {}
     while (served.length < deps.config.others.judgeOwnersPerPoll && !closed && !deps.closing.aborted) {
       const agent = await claim(served);
       if (agent === null) break;
+      // Closed (or stopping) while the claim was out: give it back before anything is asked (fix 2, G3).
+      if (closed || deps.closing.aborted) {
+        await releasePersona(deps.db, agent);
+        break;
+      }
       served.push(agent.ownerId);
       try {
         requests += await runPersonaAid(deps, agent, deps.closing);
@@ -89,6 +94,7 @@ export function startNoteJudge(deps: NoteJudgeDeps, opts: { timer?: false } = {}
     return requests;
   }
 
+  // The timer's passes never overlap: it is armed again only once a pass has ended (`arm`, in its `finally`).
   function runOnce(): Promise<number> {
     const running = pass();
     under.add(running);
