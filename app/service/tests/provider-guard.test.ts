@@ -3,7 +3,7 @@ import net from "node:net";
 import tls from "node:tls";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../src/errors.ts";
-import { guardedFetch, isPublicAddress, KEEPALIVE_IDLE_MS, normaliseBaseUrl, type Resolve } from "../src/providers/guard.ts";
+import { GuardGaveUp, guardedFetch, isPublicAddress, KEEPALIVE_IDLE_MS, normaliseBaseUrl, type Resolve } from "../src/providers/guard.ts";
 import { createSlots } from "../src/slots.ts";
 
 /**
@@ -645,8 +645,12 @@ describe("guardedFetch: provider calls in flight, site-wide", () => {
     expect(calls.inProgress()).toBe(2);
 
     // Refused, not queued behind the two held ones: a call that queued would be a third at the gate (asserted below, and a
-    // refusal that came only at timeoutMs would too), so no elapsed-time bound is needed.
-    expect(await settle(f(url))).toMatchObject(unavailable);
+    // refusal that came only at timeoutMs would too), so no elapsed-time bound is needed. It says why (`busy`), as the guard's
+    // other refusals of its own do, for a caller that tells a moment's refusal from a failure (the judgement client).
+    const over = await settle(f(url));
+    expect(over).toMatchObject(unavailable);
+    expect(over).toBeInstanceOf(GuardGaveUp);
+    expect((over as GuardGaveUp).gaveUp).toBe("busy");
     expect(gate.waiting).toHaveLength(2); // the refused call looked nothing up
 
     gate.open();

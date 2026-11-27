@@ -354,6 +354,26 @@ describe("why no channel answered (JudgeError.reason), coarse and text-free", ()
     expect(await reasonOf([dead.url], { timeoutMs: 1000 })).toBe("network");
   });
 
+  test("no place among the judgement's calls in flight is busy, and nothing is sent; a place freed is used again", async () => {
+    // The first 32 requests are never answered; any later one is.
+    const answer = answering({ need: { noul: 0.5 } });
+    const server = await stub((req, res) => (server.seen.indexOf(req) < 32 ? undefined : answer(req, res)));
+    const judge = make([server.url], { timeoutMs: 30_000 });
+    const ctl = new AbortController();
+    // The client's own cap on calls in flight (MAX_CALLS, 32): every place held by a call that is not answered.
+    const held = Array.from({ length: 32 }, () => judge.ask("s", [Q[0]!], ctl.signal).catch(() => null));
+    const deadline = Date.now() + 5000;
+    while (server.seen.length < 32 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    expect(server.seen).toHaveLength(32);
+    const err = await judge.ask("s", [Q[0]!]).then(() => null, (e: unknown) => e);
+    expect([err instanceof JudgeError, (err as JudgeError).reason]).toEqual([true, "busy"]);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(server.seen).toHaveLength(32);
+    ctl.abort();
+    await Promise.all(held);
+    expect(await judge.ask("s", [Q[0]!])).toEqual(new Map([["need", n(0.5)]]));
+  });
+
   test("the reason is the last channel's", async () => {
     const [unauthorised, broken] = [await failing(401), await failing(500)];
     expect(await reasonOf([unauthorised.url, broken.url])).toBe("status");

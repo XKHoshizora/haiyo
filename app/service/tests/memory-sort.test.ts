@@ -4,7 +4,7 @@ import { siteDay } from "../src/accounts/store.ts";
 import type { Config } from "../src/config.ts";
 import type { Db } from "../src/db.ts";
 import { JudgeError, type Answer, type Judge } from "../src/judge/client.ts";
-import { addsNothing, duplicateOf, ownerAsked, resortNote, sortNote, type SortDeps } from "../src/memory/sort.ts";
+import { addsNothing, askAll, askAllOutcome, duplicateOf, ownerAsked, resortNote, sortNote, type SortDeps } from "../src/memory/sort.ts";
 import { signUp } from "./helpers/actors.ts";
 import { SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -497,5 +497,69 @@ describe("ownerAsked", () => {
     expect(await ownerAsked(deps({}, slow), ["把那条删掉"], closing.signal)).toBe(false);
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(judge.calls).toHaveLength(1);
+  });
+});
+
+// The persona aid (persona-aid.ts) asks through this path and must know WHY there is no answer: a moment's refusal is read again at a
+// later pass, a lasting one is not (persona aid v2, round 1 ruling A2). `askAll` is this with the reason dropped.
+describe("askAllOutcome: the answers, or why there are none", () => {
+  const Q1 = [{ key: "k", type: "noul" as const, instructions: "i" }];
+  const ask = (d: SortDeps, closing?: AbortSignal) => askAllOutcome(d, "s", Q1, "sort", closing);
+  const failing = (when: RegExp): Db =>
+    new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop !== "query") return Reflect.get(target, prop, receiver);
+        return (sql: string, ...rest: unknown[]) => (when.test(sql) ? Promise.reject(new Error("db hiccup")) : (target.query as (...a: unknown[]) => unknown)(sql, ...rest));
+      },
+    });
+
+  it("an answer is answered and started; askAll returns the same map", async () => {
+    judge.answer(() => ({ k: 0.7 }));
+    expect(await ask(deps())).toEqual({ answers: new Map([["k", { type: "noul", p: 0.7 }]]), started: true });
+    expect(await askAll(deps(), "s", Q1, "sort")).toEqual(new Map([["k", { type: "noul", p: 0.7 }]]));
+    expect(await used()).toBe(2);
+  });
+
+  it("refused before anything is sent: no judge, the owner's day, memory's share, a limit that cannot be read, the service closing — none started, none counted", async () => {
+    judge.answer(() => ({ k: 0.7 }));
+    const none = (why: string) => ({ answers: null, why, started: false });
+    expect(await ask(deps({ judge: null }))).toEqual(none("no_judge"));
+    expect(await ask(deps({}, { judge: null }))).toEqual(none("no_judge"));
+    await db.query("insert into memory_judge_usage (owner_id, day, calls) values ($1, $2::date, 2)", [ownerId, today()]);
+    expect(await ask(deps({}, withMemory({ judgePerOwnerDay: 2 })))).toEqual(none("owner_limit"));
+    await db.query("insert into judge_usage (day, calls) values ($1::date, 5) on conflict (day) do update set calls = 5", [today()]);
+    expect(await ask(deps({}, { judge: { ...JUDGE, dailyLimit: 10 } }))).toEqual(none("site_share"));
+    expect(await ask(deps({ db: failing(/^\s*select calls from memory_judge_usage/) }))).toEqual(none("limit_unread"));
+    expect(await ask(deps({ db: failing(/^\s*select calls from judge_usage/) }))).toEqual(none("limit_unread"));
+    const closed = new AbortController();
+    closed.abort();
+    expect(await ask(deps(), closed.signal)).toEqual(none("closing"));
+    expect(judge.calls).toHaveLength(0);
+    expect(await used()).toBe(5);
+    expect(await ownerUsed()).toBe(2);
+  });
+
+  it("no place among the client's calls in flight is busy: nothing was sent (not started), counted as every call is", async () => {
+    judge.answer(() => new JudgeError("busy"));
+    expect(await ask(deps())).toEqual({ answers: null, why: "busy", started: false });
+    expect(await used()).toBe(1);
+  });
+
+  it("a request made that gave no answer is failed and started: any other JudgeError, a timeout, a missing key is no failure but an answer without it", async () => {
+    for (const reason of ["auth", "status", "timeout", "oversize", "shape", "key_unset", "network"] as const) {
+      judge.answer(() => new JudgeError(reason));
+      expect([reason, await ask(deps())]).toEqual([reason, { answers: null, why: "failed", started: true }]);
+    }
+    judge.answer(() => "hang");
+    expect(await ask(deps({}, { judge: { ...JUDGE, timeoutMs: 500 } }))).toEqual({ answers: null, why: "failed", started: true });
+    judge.answer(() => ({}));
+    expect(await ask(deps())).toEqual({ answers: new Map(), started: true });
+  });
+
+  it("the service closing while a request is out: closing, and started", async () => {
+    judge.answer(() => "hang");
+    const closing = new AbortController();
+    setTimeout(() => closing.abort(), 20);
+    expect(await ask(deps({}, { judge: { ...JUDGE, timeoutMs: 60_000 } }), closing.signal)).toEqual({ answers: null, why: "closing", started: true });
   });
 });

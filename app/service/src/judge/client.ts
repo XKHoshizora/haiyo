@@ -20,10 +20,11 @@ export type Answer = { type: "noul"; p: number } | { type: "choice"; probabiliti
 /**
  * Why a channel gave no answer, coarsely (to count, never with any text of it): the upstream refused the key (401, 403:
  * `auth`) or answered another status (`status`); no answer in time (`timeout`); an answer over the size cap
- * (`oversize`) or not of the protocol's shape (`shape`); the key's variable not set (`key_unset`); anything else on the
- * way — the connection, the address, no place among the calls in flight (`network`).
+ * (`oversize`) or not of the protocol's shape (`shape`); the key's variable not set (`key_unset`); no place among the calls
+ * in flight (`busy`: nothing was sent, and a moment later there may be one); anything else on the way — the connection, the
+ * address (`network`).
  */
-export type JudgeFailure = "auth" | "status" | "timeout" | "oversize" | "shape" | "key_unset" | "network";
+export type JudgeFailure = "auth" | "status" | "timeout" | "oversize" | "shape" | "key_unset" | "busy" | "network";
 
 /** No channel gave an answer; `reason` is why the last one tried did not. */
 export class JudgeError extends Error {
@@ -136,9 +137,10 @@ export function createJudge(
       }
       return parse(await res.text(), questions) ?? "shape";
     } catch (err) {
-      // This attempt's time, or the guard's wait for progress, ran out; or the guard's size cap; or anything else.
+      // This attempt's time, or the guard's wait for progress, ran out; or the guard's size cap, or no place among its calls; or anything else.
       if (bound.aborted || (err instanceof GuardGaveUp && err.gaveUp === "stalled")) return "timeout";
-      return err instanceof GuardGaveUp ? "oversize" : "network";
+      if (err instanceof GuardGaveUp) return err.gaveUp === "busy" ? "busy" : "oversize";
+      return "network";
     }
   }
 

@@ -202,7 +202,7 @@ export interface GuardOptions {
   connectTimeoutMs?: number;
   /**
    * Where calls in flight are counted, one slot each from before the name lookup until the call is over (body read,
-   * cancelled, failed, aborted or timed out); a call that finds no slot is `provider_unavailable` at once. In the app:
+   * cancelled, failed, aborted or timed out); a call that finds no slot is `provider_unavailable` at once (`GuardGaveUp` `busy`). In the app:
    * one count for the whole service (one process), `createSlots(PROVIDER_MAX_CONCURRENT_CALLS)`, which `buildApp` makes
    * from the configuration and hands to every guard it builds. Tests pass their own.
    */
@@ -231,11 +231,12 @@ export const providerUnavailable = (): AppError => new AppError(502, "provider_u
 
 /**
  * `provider_unavailable` for a call the guard itself gave up on, saying why (`gaveUp`): the answer passed
- * `maxResponseBytes`, or `timeoutMs` passed without progress. Answered and logged as any `provider_unavailable`; a caller
- * that counts its failures by kind reads why (the judgement client's `JudgeError.reason`).
+ * `maxResponseBytes`, `timeoutMs` passed without progress, or there was no slot among the calls in flight (`busy`: nothing was
+ * sent, and a moment later there may be one). Answered and logged as any `provider_unavailable`; a caller that counts its failures by
+ * kind, or tells a moment's refusal from a failure, reads why (the judgement client's `JudgeError.reason`).
  */
 export class GuardGaveUp extends AppError {
-  constructor(readonly gaveUp: "oversize" | "stalled") {
+  constructor(readonly gaveUp: "oversize" | "stalled" | "busy") {
     super(502, "provider_unavailable");
   }
 }
@@ -310,7 +311,7 @@ const NULL_BODY_STATUS = new Set([204, 205]);
 /**
  * A `fetch` for calling users' providers. For each request: the URL must pass `parseProviderUrl` (https, no
  * credentials, a plain host, a sane port); a slot among the calls in flight must be free (`GuardOptions.calls`, else
- * `provider_unavailable` at once); the host is resolved once and every address checked (`checkedAddresses`); the
+ * `provider_unavailable` at once, as `GuardGaveUp` `busy`); the host is resolved once and every address checked (`checkedAddresses`); the
  * connection is made to exactly those addresses (the name stays the Host and TLS SNI); redirects are never followed
  * (any 3xx is `provider_unavailable`); the request is aborted after `timeoutMs` without progress (re-armed when the
  * headers arrive and at every body chunk; until the address is found and connected to, after `connectTimeoutMs` when
@@ -330,7 +331,7 @@ export function guardedFetch(opts: GuardOptions): typeof fetch {
     if (typeof input !== "string" && !(input instanceof URL)) throw new TypeError("guardedFetch takes a URL or a string, not a Request");
     const url = parseProviderUrl(typeof input === "string" ? input : input.href, local);
     if (!url) throw addressNotAllowed();
-    if (calls.take(SITE) !== "taken") throw providerUnavailable();
+    if (calls.take(SITE) !== "taken") throw new GuardGaveUp("busy");
 
     // From here on `finish` gives the slot back, exactly once, however the call ends.
     const own = new AbortController();

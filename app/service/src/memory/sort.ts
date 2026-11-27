@@ -3,7 +3,7 @@ import { siteDay } from "../accounts/store.ts";
 import { countJudgement, judgementsOn } from "../agents/proactive/decide.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db.ts";
-import type { Answer, Judge, Question } from "../judge/client.ts";
+import { JudgeError, type Answer, type Judge, type Question } from "../judge/client.ts";
 import { sameKey } from "./ops.ts";
 import { count } from "./stats.ts";
 
@@ -59,13 +59,19 @@ const CANDIDATES = 20;
 /** A score from here up to `shareAt` is "unsure". */
 const UNSURE_FROM = 0.2;
 
-/** What a memory judgement is for (`judge_memory_call_<purpose>` counts them): sorting a note, the duplicate test, the faithful check, the hearsay pre-check, whether the owner asked. */
-export type JudgePurpose = "sort" | "same" | "faithful" | "precheck" | "explicit";
+/**
+ * What a memory judgement is for (`judge_memory_call_<purpose>` counts them): sorting a note, the duplicate test, the faithful check, the
+ * hearsay pre-check, whether the owner asked, a sentence of a persona (the persona aid, persona-aid.ts).
+ */
+export type JudgePurpose = "sort" | "same" | "faithful" | "precheck" | "explicit" | "persona";
 
-/** Whether the owner has used their memory judgements of site day `day` up (`memory_judge_usage`). A read that fails throws: not asked. */
-async function ownerAtLimit(db: Db, ownerId: string, day: string, limit: number): Promise<boolean> {
+/**
+ * The owner's memory judgements of site day `day` so far (`memory_judge_usage`), counted as `askAllOutcome` counts them. A read that
+ * fails throws.
+ */
+export async function ownerJudgementsUsed(db: Pick<Db, "query">, ownerId: string, day: string): Promise<number> {
   const { rows } = await db.query<{ calls: number }>("select calls from memory_judge_usage where owner_id = $1 and day = $2::date", [ownerId, day]);
-  return (rows[0]?.calls ?? 0) >= limit;
+  return rows[0]?.calls ?? 0;
 }
 
 /** One more judgement of the owner's memory today, whatever came of it. */
@@ -76,44 +82,77 @@ async function countOwner(db: Db, ownerId: string, day: string): Promise<void> {
   );
 }
 
+/** Whether memory can ask the judgement model at all: a judge, and its configuration. */
+export const judgeConfigured = (deps: Pick<SortDeps, "judge" | "config">): boolean => deps.judge !== null && deps.config.judge !== null;
+
+/**
+ * Why a memory judgement has no answers (`askAllOutcome`). Refused before anything was sent: `no_judge` (no judgement model
+ * configured), `owner_limit` (the owner's `judgePerOwnerDay` used up), `site_share` (the site's judgements of the day at
+ * `MEMORY.judgeShare` of its daily limit), `limit_unread` (those numbers could not be read), `closing` (the service is stopping; also
+ * when the stop ended a request under way), `busy` (the judgement client had no place among its calls in flight: nothing was sent,
+ * and a moment later there may be one). Asked and not answered: `failed` (no answer in time, or any other failure of the request).
+ */
+export type NoAnswer = "no_judge" | "owner_limit" | "site_share" | "limit_unread" | "closing" | "busy" | "failed";
+
+/** What `askAllOutcome` came to: the answers it did give, by key; or none, and why. `started`: a request was sent. */
+export type Asked = { answers: Map<string, Answer>; started: true } | { answers: null; why: NoAnswer; started: boolean };
+
 /**
  * One judgement call with `questions` about `state`, counted in `judge_usage`, bounded as the proactive decision is (each
- * channel its `timeoutMs`). Null when it cannot be asked (no judge, the owner's `judgePerOwnerDay` used up, the site's judgements of
- * the day at `MEMORY.judgeShare` of its daily limit) or gave no answer for any reason; else the answers it did give, by key. `closing`,
- * when given, ends a call under way as soon as it fires (no answer).
+ * channel its `timeoutMs`). Asked only when it can be (each refusal is a `NoAnswer`); once `closing` has fired nothing is asked
+ * (and nothing counted), and a request under way ends with it (no answer). A call of the client is counted for the site and the
+ * owner whatever came of it (`busy` too). The answers are the ones it did give: a key left out is no answer.
  */
-export async function askAll(deps: SortDeps, state: string, questions: readonly Question[], purpose: JudgePurpose, closing?: AbortSignal): Promise<Map<string, Answer> | null> {
+export async function askAllOutcome(deps: SortDeps, state: string, questions: readonly Question[], purpose: JudgePurpose, closing?: AbortSignal): Promise<Asked> {
   const { db, judge, config, log } = deps;
-  if (judge === null || config.judge === null) return null;
+  /** Whether the service is stopping (asked again after the request: it may have stopped it). */
+  const stopping = (): boolean => closing?.aborted === true;
+  if (judge === null || config.judge === null) return { answers: null, why: "no_judge", started: false };
+  if (stopping()) return { answers: null, why: "closing", started: false };
+  let day: string;
   try {
-    const day = siteDay(new Date(), config.siteTimezone);
-    if (await ownerAtLimit(db, deps.ownerId, day, config.memory.judgePerOwnerDay)) {
+    day = siteDay(new Date(), config.siteTimezone);
+    if ((await ownerJudgementsUsed(db, deps.ownerId, day)) >= config.memory.judgePerOwnerDay) {
       log.debug({ metric: "judge_owner_limit" }, "an owner's memory checks of the day are used up: not judged");
-      return null;
+      return { answers: null, why: "owner_limit", started: false };
     }
     // Memory takes at most its share of the site's day: the rest is for unasked replies.
     if ((await judgementsOn(db, day)) >= config.memory.judgeShare * config.judge.dailyLimit) {
       log.debug({ metric: "judge_memory_share" }, "memory's share of the site's judgements of the day is used up: not judged");
-      return null;
+      return { answers: null, why: "site_share", started: false };
     }
-    const timeout = AbortSignal.timeout(config.judge.timeoutMs * Math.max(1, config.judge.channels.length));
-    const deadline = closing ? AbortSignal.any([timeout, closing]) : timeout;
-    count(db, `judge_memory_call_${purpose}`);
-    let answers: Map<string, Answer> | null = null;
-    try {
-      answers = await judge.ask(state, questions, deadline);
-    } catch {
-      // No answer: the callers fail closed (or open, as they decide).
-    }
-    // Counted whatever came of the call; a failure of the count itself never changes the result.
-    await countJudgement(db, day).catch((err: unknown) => log.info({ metric: "judge_count_failed", err }, "a judgement could not be counted"));
-    await countOwner(db, deps.ownerId, day).catch((err: unknown) => log.info({ metric: "judge_count_failed", err }, "a judgement could not be counted"));
-    return answers;
   } catch (err) {
     // The limit check could not be read: not asked.
     log.info({ metric: "judge_limit_check_failed", err }, "the judgement limit could not be read: not judged");
-    return null;
+    return { answers: null, why: "limit_unread", started: false };
   }
+  const timeout = AbortSignal.timeout(config.judge.timeoutMs * Math.max(1, config.judge.channels.length));
+  const deadline = closing ? AbortSignal.any([timeout, closing]) : timeout;
+  count(db, `judge_memory_call_${purpose}`);
+  let answers: Map<string, Answer> | null = null;
+  let failure: unknown = null;
+  try {
+    answers = await judge.ask(state, questions, deadline);
+  } catch (err) {
+    // No answer: the callers fail closed (or open, as they decide).
+    failure = err;
+  }
+  // Counted whatever came of the call; a failure of the count itself never changes the result.
+  await countJudgement(db, day).catch((err: unknown) => log.info({ metric: "judge_count_failed", err }, "a judgement could not be counted"));
+  await countOwner(db, deps.ownerId, day).catch((err: unknown) => log.info({ metric: "judge_count_failed", err }, "a judgement could not be counted"));
+  if (answers !== null) return { answers, started: true };
+  if (stopping()) return { answers: null, why: "closing", started: true };
+  if (failure instanceof JudgeError && failure.reason === "busy") return { answers: null, why: "busy", started: false };
+  return { answers: null, why: "failed", started: true };
+}
+
+/**
+ * `askAllOutcome` without the why: null when it cannot be asked (no judge, the owner's `judgePerOwnerDay` used up, the site's
+ * judgements of the day at `MEMORY.judgeShare` of its daily limit) or gave no answer for any reason; else the answers it did give, by
+ * key. `closing`, when given, ends a call under way as soon as it fires (no answer).
+ */
+export async function askAll(deps: SortDeps, state: string, questions: readonly Question[], purpose: JudgePurpose, closing?: AbortSignal): Promise<Map<string, Answer> | null> {
+  return (await askAllOutcome(deps, state, questions, purpose, closing)).answers;
 }
 
 async function ask(deps: SortDeps, state: string, question: Question, purpose: JudgePurpose, closing?: AbortSignal): Promise<Answer | null> {
