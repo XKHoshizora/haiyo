@@ -5,6 +5,7 @@ import { exactTs } from "../src/memory/write.ts";
 import { api, signUp, type Actor, type ApiResult } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { useApp } from "./helpers/harness.ts";
+import { backendPid, waitersBehind } from "./helpers/locks.ts";
 import { scriptedGateway } from "./helpers/models.ts";
 import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
 import { closeAllSockets, connect } from "./helpers/ws.ts";
@@ -362,25 +363,19 @@ describe("T1: what is said in a social conversation stays there (the isolation c
 
 /**
  * Two writes of one note that meet at its room's lock (fix round 1, F1, F4): `first` and then `second` are sent while a third
- * connection holds the lock, each seen waiting for it before the next is sent; Postgres grants an advisory lock's waiters in the
- * order they came, so `first` takes it first once it is let go. Both answers.
+ * connection holds the lock, each seen waiting behind that connection (`waitersBehind`: on the one lock it holds, never on some other
+ * advisory lock of the shared cluster) before the next is sent; Postgres grants an advisory lock's waiters in the order they came, so
+ * `first` takes it first once it is let go. Both answers.
  */
 async function meetAtTheLock(room: string, first: () => Promise<ApiResult>, second: () => Promise<ApiResult>): Promise<[ApiResult, ApiResult]> {
-  const waiting = async (n: number) => {
-    for (let i = 0; i < 400; i++) {
-      const { rows } = await db.query<{ n: number }>("select count(*)::int as n from pg_locks where locktype = 'advisory' and not granted and database = (select oid from pg_database where datname = current_database())");
-      if (rows[0]!.n >= n) return;
-      await new Promise((r) => setTimeout(r, 10));
-    }
-    throw new Error(`meetAtTheLock: ${n} waiter(s) never came`);
-  };
   let answers: [ApiResult, ApiResult] | null = null;
   await db.tx(async (t) => {
+    const holder = await backendPid(t);
     await t.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [room]);
     const a = first();
-    await waiting(1);
+    if (!(await waitersBehind(db, holder, 1))) throw new Error("meetAtTheLock: the first never waited at the room's lock");
     const b = second();
-    await waiting(2);
+    if (!(await waitersBehind(db, holder, 2))) throw new Error("meetAtTheLock: the second never waited at the room's lock");
     answers = [a, b] as unknown as [ApiResult, ApiResult];
   });
   const [a, b] = answers!;
