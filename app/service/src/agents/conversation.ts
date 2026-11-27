@@ -12,8 +12,6 @@ import { insertMessage, MESSAGE_COLUMNS, toStored, type MessageBody, type Messag
 import { MESSAGE_TEXT_MAX } from "../messages/send.ts";
 import { placeOf } from "../social/place.ts";
 import { reach } from "../social/reach.ts";
-import { shownNotesPass } from "../memory/shown.ts";
-import type { ShownNote } from "../memory/passage.ts";
 import { cleanModelText, hasVisibleText } from "../schemas.ts";
 import { addressRanges, codeRanges, mentionsAtSend } from "./mentions.ts";
 import { parseProposalBlock, storeProposal } from "./persona.ts";
@@ -303,7 +301,7 @@ export async function postAsAgent(
   mark: string | null,
   config: RunLimits & Pick<Config, "agentChainLimit" | "tools">,
   as: "reply" | "ack" = "reply",
-): Promise<PostedReply | null | { refused: "access_ended" | "notes_changed" }> {
+): Promise<PostedReply | null | { refused: "access_ended" }> {
   const agent = await lockAgent(t, agentId, conversationId);
   const own = conversationId === agent.conversationId;
   const ack = as === "ack";
@@ -316,8 +314,8 @@ export async function postAsAgent(
   // A run that has ended — another instance's recovery ended it while this one was still answering — is never posted;
   // nor is one its Agent's pause or delete interrupted, even once the Agent is resumed (runs.ts); nor a run of another
   // conversation's, here.
-  const run = await t.query<{ status: string; interrupted: string | null; lane: Lane; caller_id: string | null; covers: string; told: boolean; origin: boolean; shown_notes: ShownNote[] | null }>(
-    "select status, interrupted, lane, caller_id, covers_seq::text as covers, whisper_id is not null as told, origin_seq is not null as origin, shown_notes from agent_runs where id = $1 and agent_id = $2 and conversation_id = $3",
+  const run = await t.query<{ status: string; interrupted: string | null; lane: Lane; caller_id: string | null; covers: string; told: boolean; origin: boolean }>(
+    "select status, interrupted, lane, caller_id, covers_seq::text as covers, whisper_id is not null as told, origin_seq is not null as origin from agent_runs where id = $1 and agent_id = $2 and conversation_id = $3",
     [runId, agentId, conversationId],
   );
   if (run.rows[0]?.status !== "running") throw new RunNotRunning(runId, run.rows[0]?.status ?? null);
@@ -328,14 +326,14 @@ export async function postAsAgent(
   if (!own && !(await currentMembership(t, conversationId, agentId))) throw new AppError(409, "agent_removed");
   if (!own && mark === null) throw new Error("a reply in a group is posted only with the mark its run drew");
   // A social conversation: no acknowledgement (nothing the Agent says before a tool is posted there), and the reply is posted on the
-  // access and the notes as they are NOW — the visitor may be refused (`reach`, with the switch), or a note it was shown no longer be
-  // told them (`shownNotesPass`). Either marks the run interrupted in THIS transaction (the run row after the note rows, the lock order)
-  // and is returned, not thrown: the mark commits, the run ends `cancelled` with that value, nothing is posted, and the visitor is told
-  // nothing of why. A group's rule below (`standingCalls`) is not asked of it: a social run has one caller.
+  // access as it is NOW — the visitor may be refused (`reach`, with the switch). That marks the run interrupted in THIS transaction and
+  // is returned, not thrown: the mark commits, the run ends `cancelled` with that value, nothing is posted, and the visitor is told
+  // nothing of why. The notes it was shown are not looked at again (ring 1b: as in a group, a note is read once, at the run's start).
+  // A group's rule below (`standingCalls`) is not asked of it: a social run has one caller.
   const social = !own && (await placeOf(t, conversationId, agent)) === "social";
   if (social) {
     if (ack) return null;
-    const refusal = await socialRefusal(t, agent, runId, run.rows[0].caller_id, run.rows[0].shown_notes ?? [], config);
+    const refusal = await socialRefusal(t, agent, runId, run.rows[0].caller_id, config);
     if (refusal !== null) return { refused: refusal };
   }
   // A person refused after `begin` dropped what it dropped (a block, a stop, a removal arriving while the reply was written): the
@@ -487,24 +485,14 @@ export async function postAsAgent(
 
 /**
  * A social reply's last look before it is posted, under the conversation's and the Agent's row: the run's one caller must still reach
- * the Agent (`reach`, social) and every note it was shown (`shown`, the run's `shown_notes`) must still be one they may be told
- * (`shownNotesPass`). Otherwise the run is marked `interrupted` with that reason, in the caller's transaction, and the reason is
+ * the Agent (`reach`, social). Otherwise the run is marked `interrupted` (`access_ended`), in the caller's transaction, and that is
  * returned (what waits behind it is held to the visitor's access again when its end takes it: runs.ts `takeDeferred`). A caller who
  * is missing or is the Agent's owner is refused outright (`runAccess`'s rule).
  */
-async function socialRefusal(
-  t: Tx,
-  agent: AgentRow,
-  runId: string,
-  callerId: string | null,
-  shown: readonly ShownNote[],
-  config: Pick<Config, "social">,
-): Promise<"access_ended" | "notes_changed" | null> {
-  let reason: "access_ended" | "notes_changed" | null = null;
+async function socialRefusal(t: Tx, agent: AgentRow, runId: string, callerId: string | null, config: Pick<Config, "social">): Promise<"access_ended" | null> {
+  let reason: "access_ended" | null = null;
   if (callerId === null || callerId === agent.ownerId || (await reach(t, callerId, agent.id, "social", config)) !== "ok") reason = "access_ended";
-  else if (!(await shownNotesPass(t, agent, callerId, shown))) reason = "notes_changed";
   if (reason !== null) await t.query("update agent_runs set interrupted = $2 where id = $1", [runId, reason]);
-
   return reason;
 }
 

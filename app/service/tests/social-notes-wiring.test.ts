@@ -10,10 +10,10 @@ import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
 import { closeAllSockets } from "./helpers/ws.ts";
 
 /**
- * Lane B, B7c: the notes a social run is shown, and the advisory room. Ring 1a shows a visitor NO owner notes at all (a canary in the
- * owner's notes, open and vault, never appears in any request built for a social run, nor in what is posted); `loadNotes`'s social
- * answer is wired through `fitNotes`, and the refs of the notes it kept are written to the run with the admission (`shown_notes`,
- * `withheld_notes`; null when empty); an others' reply is offered tools only when the advisory room covers the hold with them.
+ * Lane B, B7c: the notes a social run is shown, and the advisory room. Ring 1b shows a visitor's reply the notes outside the vault (a
+ * canary in the vault, or in hearsay, never appears in any request built for a social run; nothing of the notes is in what is posted
+ * by a reply that does not say it); `loadNotes`'s social answer is wired through `fitNotes`, and the refs of the notes it kept are
+ * written to the run with the admission (`shown_notes`; null when empty); an others' reply is offered tools as the owner's own is.
  */
 const loadNotesOverride = vi.hoisted(() => ({ current: null as null | ((where: NotesPlace) => LoadedNotes | null) }));
 vi.mock("../src/memory/passage.ts", async (importOriginal) => {
@@ -50,8 +50,8 @@ const runOf = async (w: World) =>
     [w.agent.id, w.conv],
   )).rows[0]!;
 
-describe("ring 1a shows a visitor no owner notes at all", () => {
-  it("a canary in the owner's notes (open and vault, the owner's and the Agent's own, hearsay) is in no request built for a social run, nor in what is posted", async () => {
+describe("ring 1b shows a visitor's reply the notes outside the vault, and nothing else", () => {
+  it("the open notes (the owner's and the Agent's own) are in the request, the vault and hearsay never; nothing of them is in what is posted; the run records the open ones", async () => {
     const w = await world("canary");
     await db.query("insert into owner_notes (owner_id, text, vault) values ($1, $2, false), ($1, $3, true)", [w.owner.id, "OWNER-OPEN-CANARY 主人爱吃辣", "OWNER-VAULT-CANARY 主人的存款"]);
     await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, false), ($1, $3, true)", [w.agent.id, "SELF-OPEN-CANARY 我记下的", "SELF-VAULT-CANARY 我私下记的"]);
@@ -62,17 +62,20 @@ describe("ring 1a shows a visitor no owner notes at all", () => {
     expect(await app.agentWorker.runOnce()).toBe(true);
     const calls = gateway.calls.slice(-1);
     expect(calls).toHaveLength(1);
-    expect(JSON.stringify(calls)).not.toContain("CANARY");
-    expect(calls[0]!.system).not.toContain("以下是你记下的笔记");
+    const sent = JSON.stringify(calls);
+    expect(sent).toContain("OWNER-OPEN-CANARY");
+    expect(sent).toContain("SELF-OPEN-CANARY");
+    for (const never of ["OWNER-VAULT-CANARY", "SELF-VAULT-CANARY", "HEARSAY-CANARY"]) expect([never, sent.includes(never)]).toEqual([never, false]);
     const posted = await db.query<{ body: unknown }>("select body from messages where conversation_id = $1 and sender_id = $2", [w.conv, w.agent.id]);
     expect(JSON.stringify(posted.rows)).not.toContain("CANARY");
     const run = await runOf(w);
-    expect(run).toMatchObject({ status: "done", shown_notes: null, withheld_notes: null });
+    expect(run).toMatchObject({ status: "done", withheld_notes: null });
+    expect((run.shown_notes as Array<{ kind: string }>).map((r) => r.kind)).toEqual(["owner", "self"]);
   });
 });
 
-describe("ring 1a, a run with a tool round", () => {
-  it("m4: every request of a social run that calls a tool (the steps and the finishing request) is free of every canary, and so is what is posted", async () => {
+describe("a social run with a tool round", () => {
+  it("m4: no request of a social run that calls a tool (the steps and the finishing request) holds a vault note or hearsay, and nothing of the notes is posted", async () => {
     const w = await world("canarytool");
     await setOwnerLimit(db, w.owner.id, 70n * POINT);
     await db.query("insert into owner_notes (owner_id, text, vault) values ($1, $2, false), ($1, $3, true)", [w.owner.id, "OWNER-OPEN-CANARY 主人爱吃辣", "OWNER-VAULT-CANARY 主人的存款"]);
@@ -85,7 +88,7 @@ describe("ring 1a, a run with a tool round", () => {
     expect(await app.agentWorker.runOnce()).toBe(true);
     const mine = gateway.calls.slice(before);
     expect(mine.length).toBeGreaterThanOrEqual(2);
-    expect(JSON.stringify(mine)).not.toContain("CANARY");
+    for (const never of ["OWNER-VAULT-CANARY", "SELF-VAULT-CANARY", "HEARSAY-CANARY"]) expect([never, JSON.stringify(mine).includes(never)]).toEqual([never, false]);
     const posted = await db.query<{ body: unknown }>("select body from messages where conversation_id = $1 and sender_id = $2 and kind = 'text'", [w.conv, w.agent.id]);
     expect(posted.rows).toHaveLength(1);
     expect(JSON.stringify(posted.rows)).not.toContain("CANARY");
@@ -121,9 +124,8 @@ describe("loadNotes wired into the social run", () => {
     await say(w.v, w.conv, "你好呀");
     gateway.reply("好。");
     expect(await app.agentWorker.runOnce()).toBe(true);
-    // (Step 0's `shownNotesPass` answers true only for no note shown: a shown note with no verdict stops the post, `notes_changed`, which is
-    // what the post-time check is for. Lane A's real one answers by the verdicts.)
-    expect(await runOf(w)).toMatchObject({ status: "cancelled", error: "notes_changed", shown_notes: refs, withheld_notes: [withheld] });
+    // (Ring 1b: there is no post-time note check, so the reply is posted whatever it was shown.)
+    expect(await runOf(w)).toMatchObject({ status: "done", error: null, shown_notes: refs, withheld_notes: [withheld] });
     // The kept notes are in the request as the social passage shows them.
     expect(gateway.calls.at(-1)!.system).toContain("SHOWN-OWNER");
     expect(gateway.calls.at(-1)!.system).toContain("现在是在你和对方的对话里");

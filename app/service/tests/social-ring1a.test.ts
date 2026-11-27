@@ -401,8 +401,8 @@ describe("I1a.4: bars and blocks in a shared group (one access decision at every
   });
 });
 
-describe("I1a.5: nothing of the owner's notes reaches a visitor (ring 1a), through the real add path", () => {
-  it("a vault canary and an open-note canary are in no request of a visitor's reply and in nothing the visitor is sent", async () => {
+describe("I1a.5, as ring 1b has it: the vault never reaches a visitor's reply, through the real add path; nothing of the notes is sent to the visitor", () => {
+  it("a vault canary is in no request of a visitor's reply; the open notes are (as in a group); the visitor is sent none of them", async () => {
     const w = await visited();
     await db.query("insert into owner_notes (owner_id, text, vault) values ($1, $2, false), ($1, $3, true)", [w.owner.id, "OPEN-CANARY 主人爱吃辣", "VAULT-CANARY 主人的存款"]);
     await db.query("insert into agent_notes (agent_id, text, vault) values ($1, $2, false)", [w.agent.id, "SELF-CANARY 我记下的"]);
@@ -414,12 +414,15 @@ describe("I1a.5: nothing of the owner's notes reaches a visitor (ring 1a), throu
     expect(await app.agentWorker.runOnce()).toBe(true);
     const calls = gateway.calls.slice(from);
     expect(calls.length).toBe(2);
-    expect(JSON.stringify(calls)).not.toContain("CANARY");
+    expect(JSON.stringify(calls)).not.toContain("VAULT-CANARY");
+    expect(JSON.stringify(calls)).toContain("OPEN-CANARY");
+    expect(JSON.stringify(calls)).toContain("SELF-CANARY");
     const read = await api(app, w.v, "GET", `/api/conversations/${w.conv}/messages`);
     expect(JSON.stringify(read.json)).not.toContain("CANARY");
     expect(JSON.stringify(socket.events)).not.toContain("CANARY");
-    const [run] = (await db.query<{ shown_notes: unknown; withheld_notes: unknown }>("select shown_notes, withheld_notes from agent_runs where agent_id = $1 and conversation_id = $2", [w.agent.id, w.conv])).rows;
-    expect(run).toEqual({ shown_notes: null, withheld_notes: null });
+    const [run] = (await db.query<{ shown_notes: Array<{ kind: string }> | null; withheld_notes: unknown }>("select shown_notes, withheld_notes from agent_runs where agent_id = $1 and conversation_id = $2", [w.agent.id, w.conv])).rows;
+    expect(run!.withheld_notes).toBeNull();
+    expect(run!.shown_notes!.map((r) => r.kind)).toEqual(["owner", "self"]);
     // What the visitor is sent of the reply: its text; never its reasoning, the model it used or what its search asked for.
     const reply = (read.json.messages as Array<Record<string, unknown>>).find((m) => m.senderId === w.agent.id)!;
     for (const key of ["reasoning", "via", "queries"]) expect(reply, key).not.toHaveProperty(key);

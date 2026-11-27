@@ -9,8 +9,8 @@ import { SOCIAL_ON, seedSocial } from "./helpers/social.ts";
 import { closeAllSockets, connect } from "./helpers/ws.ts";
 
 /**
- * Lane B, B8: post, finish and claim for a social run. A reply is posted once, on the access and notes as they are NOW (`reach` again,
- * `shownNotesPass`); the outcomes `owner_spoke`, `access_ended`, `notes_changed` end the run `cancelled` with that value, nothing
+ * Lane B, B8: post, finish and claim for a social run. A reply is posted once, on the access as it is NOW (`reach` again; ring 1b has
+ * no post-time note check); the outcomes `owner_spoke`, `access_ended` end the run `cancelled` with that value, nothing
  * half-posted, no unhandled rejection, the hold settled exactly once, and the visitor is told nothing of why (the hub's visitor wire
  * has no reason: tests/social-places-runs.test.ts). No acknowledgement is posted in a social conversation, no review, no summary;
  * with the switch off a queued social run ends `access_ended` at the next claim and an own run is claimed.
@@ -159,17 +159,15 @@ describe("the post checks access and notes as they are now", () => {
     expect(await usageRecords(ticket.id)).toBe(1);
   });
 
-  it("test 8, lane B's half: a shown note without a verdict: refused, cancelled/notes_changed, nothing posted; the next message gets a new run", async () => {
+  it("ring 1b: no post-time note check — a reply whose shown note is gone or changed since is posted as it is (as in a group)", async () => {
     const w = await world("notes");
     await say(w.v, w.conv, "你好");
     const ticket = await begun(w);
     await db.query("update agent_runs set shown_notes = $2::jsonb where id = $1", [ticket.id, JSON.stringify([{ kind: "owner", id: "11111111-1111-4111-8111-111111111111", version: "2026-03-01T00:00:00.000000Z" }])]);
-    expect(await app.agentPort.post(ticket, { text: "在的", ...REPLY })).toBe("refused");
-    expect(await posted(w)).toEqual([]);
-    await app.agentPort.finish(ticket, { status: "cancelled" }, null, NOTHING);
-    expect(await runOf(w)).toMatchObject({ status: "cancelled", error: "notes_changed" });
-    await say(w.v, w.conv, "再问一次");
-    expect((await db.query("select 1 from agent_runs where agent_id = $1 and status = 'queued'", [w.agent.id])).rowCount).toBe(1);
+    expect(await app.agentPort.post(ticket, { text: "在的", ...REPLY })).toBe("posted");
+    expect((await posted(w)).map((m) => m.body.text)).toEqual(["在的"]);
+    await app.agentPort.finish(ticket, { status: "done" }, null, NOTHING);
+    expect(await runOf(w)).toMatchObject({ status: "done", error: null, interrupted: null });
   });
 
   it("owner_spoke: the owner's message while the reply is written: not posted, cancelled/owner_spoke, nothing queued", async () => {

@@ -852,8 +852,8 @@ export class DbAgentPort implements AgentPort {
       // What its Agent may be shown of its memory here (`notesFor`'s rules), read once with the rest, under the same locks.
       // An onboarding run (its own conversation, no persona yet) is shown none (`systemPrompt`), so none is read.
       // At most `MEMORY.passageShare` of the model's context goes to it: over that entries are left out (`fitNotes`).
-      // A social run reads its place's notes (`loadNotes`, social: in ring 1a none at all, whatever the owner wrote; ring 1b decides what
-      // this one person may be shown), never a group's.
+      // A social run reads its place's notes (`loadNotes`, social: what a group is shown, minus hearsay and the origin exception; ring 1b),
+      // never a group's.
       const found =
         place === "own" && agent.persona === ""
           ? null
@@ -864,8 +864,8 @@ export class DbAgentPort implements AgentPort {
               config,
             );
       const notes = found === null ? NO_NOTES : fitNotes(found.notes, place, config.siteTimezone, displayName, passageBudget(resolved.contextTokens, resolved.call.maxOutputTokens, config.memory.passageShare), planned).notes;
-      // A social run records what it was shown: the refs of the notes `fitNotes` kept (each note a visitor may be shown carries its ref),
-      // and what was left out for want of a yes (`withheld`); written with the admission (step 3). Ring 1a: both always empty.
+      // A social run records what it was shown: the refs of the notes `fitNotes` kept (each note a visitor may be shown carries its ref);
+      // written with the admission (step 3), for its owner's eyes only (messages/read.ts `shownNotes`).
       const socialNotes = social && found !== null ? { shown: [...notes.owner, ...notes.self].flatMap((n) => ("ref" in n ? [(n as { ref: ShownNote }).ref] : [])), withheld: found.withheld } : null;
       // What the web search's offer says of the reply (the product owner's rules, lane websearch2): a reply of an Agent
       // whose `webSearch` is on may have it, in every lane and on every model (a provider model's searches are paid from
@@ -902,15 +902,15 @@ export class DbAgentPort implements AgentPort {
       // nothing at or before its asker's line (`askerLine`, Task 10b: its askers — those whose questions it answers and everyone it
       // hears from, recorded as each call was accepted, runs.ts `heardIn`) but the calls it answers (`callsSeen`), read once,
       // here, for the whole run; nothing after its assignment's last call (`upTo`), so nobody it has not heard is shown.
-      // A social run has no asker's line: the Agent is shown the whole conversation it can see (`after` 0), up to the weight a social
-      // reply is shown (`OTHERS.contextWeight`), and the calls it answers.
+      // A social run has no asker's line: the Agent is shown the whole conversation it can see (`after` 0), up to a group's cap (ring 1b:
+      // `AGENT_GROUP_CONTEXT_TOKENS` of its latest `GROUP_CONTEXT_MESSAGES`), and the calls it answers.
       const line = group ? await askerLine(t, run.id) : 0;
       const calls = away ? await callsSeen(t, agent.id, run.id, line) : [];
       if (away && calls.length === 0 && told === null) return { end: NOTHING_LEFT };
       const cap = group
         ? { maxTokens: config.agentGroupContextTokens, maxMessages: GROUP_CONTEXT_MESSAGES, after: line, calls }
         : social
-          ? { maxTokens: config.others.contextWeight, maxMessages: GROUP_CONTEXT_MESSAGES, after: 0, calls, place: "social" as const }
+          ? { maxTokens: config.agentGroupContextTokens, maxMessages: GROUP_CONTEXT_MESSAGES, after: 0, calls, place: "social" as const }
           : null;
       // The pair's summary and what of it may be shown, read once for every plan below (round 2, N-4: two indexed reads at
       // most, nothing of the conversation's history), here, under the row its job writes it under.
@@ -1449,9 +1449,9 @@ export class DbAgentPort implements AgentPort {
         const reply: AgentReply = { ...said, refs: flags?.tools?.refs ?? null };
         return postAsAgent(t, run.agentId, run.conversationId, run.id, reply, mark, this.deps.config, as);
       });
-      // The access or a note it was shown ended meanwhile (a social reply): the run was marked in that transaction, which committed.
+      // The access ended meanwhile (a social reply): the run was marked in that transaction, which committed.
       if (posted !== null && "refused" in posted) {
-        this.deps.log.info({ metric: "social_post_refused", reason: posted.refused }, "agent run: a social reply was not posted (its access, or a note it was shown, ended before the post)");
+        this.deps.log.info({ metric: "social_post_refused", reason: posted.refused }, "agent run: a social reply was not posted (its access ended before the post)");
         return "refused";
       }
       if (!posted) return "empty";

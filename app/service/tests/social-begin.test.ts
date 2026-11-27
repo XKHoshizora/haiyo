@@ -18,7 +18,7 @@ import { closeAllSockets } from "./helpers/ws.ts";
  * Lane B, B7a: `begin` for a social run (access, scene, context, system text). A social reply is bounded as another person's reply
  * is (800 tokens, reasoning none, no replayed calls, no summary), is shown the other party as 对方 and the owner as 你的主人 by account
  * alone, is told it conveys and never commits, and takes NO arm of a group's: no group text, no group tools, no memory review, no
- * notes of the owner's (a visitor is shown none in ring 1a).
+ * vault note (ring 1b shows it the notes outside the vault, as a group is shown them).
  */
 const gateway = scriptedGateway();
 const { app, db } = useApp({ env: SITE_ENV, models: gateway, agentWorker: false, memory: true, config: SOCIAL_ON });
@@ -216,8 +216,11 @@ ${ownerName}（@${w.owner.handle}）：我是你的主人`);
     const [call] = callsHere();
     for (const word of ["群里", "群聊", "群名", "群成员", "以下是群里的人", "其他 Agent"]) expect(call!.system, word).not.toContain(word);
     expect(call!.system).not.toContain("更早的对话摘要");
-    expect(call!.system).not.toContain(NOTES_SECRET_CLAUSE);
-    expect(JSON.stringify(call)).not.toContain("CANARY");
+    // Ring 1b: the open note is shown as a social reply's passage (with its secrets clause, as a group's), the vault never.
+    expect(call!.system).toContain("OPEN-CANARY");
+    expect(call!.system).toContain("现在是在你和对方的对话里");
+    expect(call!.system).toContain(NOTES_SECRET_CLAUSE);
+    expect(JSON.stringify(call)).not.toContain("VAULT-CANARY");
     expect(noted).not.toHaveBeenCalled();
     expect(summarise).not.toHaveBeenCalled();
     expect(await db.query("select 1 from agent_runs where agent_id = $1 and purpose <> 'reply'", [w.agent.id])).toHaveProperty("rowCount", 0);
@@ -300,25 +303,31 @@ describe("access, scene, context", () => {
     expect(await lastRun(w)).toMatchObject({ status: "cancelled", error: "access_ended" });
   });
 
-  it("a message over OTHERS.contextWeight is cut to it as a group's is to its cap (the call is made; context_too_small is the model's context alone)", async () => {
+  it("the context is held to the group's cap (AGENT_GROUP_CONTEXT_TOKENS, 12 000; ring 1b): a long message is shown whole below it", async () => {
     const w = await world("访客己");
     await say(w.v, w.conv, "长".repeat(7_900));
     gateway.reply("好。");
     expect(await app.agentWorker.runOnce()).toBe(true);
     expect(callsHere()).toHaveLength(1);
     const shown = textsOf(callsHere()[0]!).join("");
-    expect(shown.length).toBeLessThan(7_900);
+    expect(shown).toContain("长".repeat(7_900));
     expect(await lastRun(w)).toMatchObject({ status: "done" });
   });
 
-  it("the context is held to OTHERS.contextWeight (4000), not the group's cap: older messages fall away", async () => {
+  it("the group's cap, not a smaller one of its own: 4 500 weight after the oldest line keeps it; 14 000 lets it fall away", async () => {
     const w = await world("访客庚");
     await say(w.v, w.conv, "最早的话 OLDEST-CANARY");
     for (let i = 0; i < 5; i++) await say(w.v, w.conv, `${"填".repeat(900)}${i}`);
     gateway.reply("好。");
     await app.agentWorker.runOnce();
-    const text = JSON.stringify(callsHere()[0]!.messages);
+    expect(JSON.stringify(callsHere()[0]!.messages)).toContain("OLDEST-CANARY");
+    const at = gateway.calls.length;
+    for (let i = 0; i < 2; i++) await say(w.v, w.conv, `${"满".repeat(7_000)}${i}`);
+    gateway.reply("好。");
+    await app.agentWorker.runOnce();
+    const text = JSON.stringify(gateway.calls.slice(at)[0]!.messages);
     expect(text).not.toContain("OLDEST-CANARY");
+    expect(text).toContain(`${"满".repeat(7_000)}1`);
   });
 });
 

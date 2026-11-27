@@ -4,7 +4,6 @@ import { NO_NOTES } from "../src/agents/runtime/prompt.ts";
 import { renderNotice } from "../src/conversations/system.ts";
 import { canSend } from "../src/conversations/store.ts";
 import { loadNotes } from "../src/memory/passage.ts";
-import { shownNotesPass } from "../src/memory/shown.ts";
 import { startNoteJudge } from "../src/memory/judge.ts";
 import { othersAdmissible } from "../src/metering/others.ts";
 import { discoverable, reach, reachSql, refusedSql } from "../src/social/reach.ts";
@@ -81,15 +80,13 @@ describe("the seams: reach is the rule, the money stubs say yes, notes are none"
     expect(await reach(db, other.id, agent.id, "group", off)).toBe("blocked");
   });
 
-  it("an Agent is not discoverable with the switch off, the owner's number admits with nothing used, the notes of a social conversation are none", async () => {
+  it("an Agent is not discoverable with the switch off, the owner's number admits with nothing used, a social conversation with no notes is shown none", async () => {
     const { owner, member, v, agent } = await world();
     expect(await discoverable(db, agent.id, member.id, off)).toBe(false);
     expect(await db.tx((t) => othersAdmissible(t, app.deps.config, owner.id, new Date()))).toBe(true);
     const s = (await seedSocial(app, { owner, agentId: agent.id, visitor: v })).conversationId;
     const loaded = await db.tx((t) => loadNotes(t, asAgent(owner, agent), { place: "social", conversationId: s, audienceId: v.id }, app.deps.config));
     expect(loaded).toEqual({ notes: NO_NOTES, shown: [], withheld: [] });
-    expect(await db.tx((t) => shownNotesPass(t, asAgent(owner, agent), v.id, []))).toBe(true);
-    expect(await db.tx((t) => shownNotesPass(t, asAgent(owner, agent), v.id, [{ kind: "owner", id: "x", version: "1" }]))).toBe(false);
   });
 
   it("own and group notes are read as before, on a plain connection", async () => {

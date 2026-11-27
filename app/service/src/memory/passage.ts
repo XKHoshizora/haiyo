@@ -2,6 +2,7 @@ import type { Config } from "../config.ts";
 import type { Queryable, Tx } from "../db.ts";
 import { NO_GROUP_TITLE, NO_NOTES, type PromptNote, type PromptNotes } from "../agents/runtime/prompt.ts";
 import { notesFor, type NoteKind } from "./store.ts";
+import { listRoomExact, type ExactNote } from "./write.ts";
 
 /**
  * What a group the Agent's owner is no longer a member of is called in the passage: after leaving, the group's title is
@@ -42,19 +43,38 @@ export interface LoadedNotes {
 type NotesAgent = { id: string; ownerId: string; memory: boolean; sharedNotes: boolean };
 
 /**
+ * What a social reply is shown of its Agent's memory (ring 1b, option A: the vault, exactly as in a group): nothing when its memory
+ * is off; the notes about its owner (when it uses the shared ones) and its own that are not in the vault — never a vault note, not
+ * even one that began in this very conversation (a group's origin exception is not a social reply's), and never hearsay. Each note
+ * carries its reference at the version read (`exactTs`, in the same read as its text), so that what `fitNotes` keeps can be recorded
+ * on the run. Read once, at the run's start, as a group's are: no check after.
+ */
+async function socialNotes(q: Queryable, agent: NotesAgent): Promise<PromptNotes> {
+  if (!agent.memory) return NO_NOTES;
+  const shown = (entries: ExactNote[]): SocialNote[] =>
+    entries.filter((e) => !e.note.vault).map((e) => ({ ...e.note, ref: { kind: e.note.kind, id: e.note.id, version: e.updatedAt } }));
+  // In sequence: `q` is one transaction client, which runs one query at a time.
+  const owner = agent.sharedNotes ? shown(await listRoomExact(q, { kind: "owner", ownerId: agent.ownerId })) : [];
+  const self = shown(await listRoomExact(q, { kind: "self", agentId: agent.id }));
+  return { owner, self, hearsay: [] };
+}
+
+/**
  * What a run is given of its Agent's memory (`notesFor`'s answer, rule for rule), with each piece of hearsay carrying
  * the title of the group it was said in — read here for just the conversations `notesFor` returned, and only while the
  * Agent's owner is a current member there (else `LEFT_GROUP_TITLE`); a group that has no title is
  * `某个群`. `notesPassage` (agents/runtime/prompt.ts) turns the result into text.
  *
- * Own and group only read, and take any `Queryable`, so memory/routes.ts's call on `db` stays as it is. The social branch takes a
- * transaction: in ring 1b it writes verdict rows, in (kind, id) order. Until then a social conversation is shown no notes at all
- * (a visitor is shown none in ring 1a).
+ * Own and group only read, and take any `Queryable`, so memory/routes.ts's call on `db` stays as it is. A social conversation is
+ * shown what `socialNotes` says, read in the run's own transaction.
  */
 export async function loadNotes(q: Queryable, agent: NotesAgent, where: Extract<NotesPlace, { place: "own" | "group" }>, config: Pick<Config, "others">): Promise<LoadedNotes>;
 export async function loadNotes(t: Tx, agent: NotesAgent, where: NotesPlace, config: Pick<Config, "others">): Promise<LoadedNotes>;
 export async function loadNotes(q: Queryable, agent: NotesAgent, where: NotesPlace, _config: Pick<Config, "others">): Promise<LoadedNotes> {
-  if (where.place === "social") return { notes: NO_NOTES, shown: [], withheld: [] };
+  if (where.place === "social") {
+    const notes = await socialNotes(q, agent);
+    return { notes, shown: [...notes.owner, ...notes.self].map((n) => (n as SocialNote).ref), withheld: [] };
+  }
   const found = await notesFor(q, agent, where.place === "group" ? { conversationId: where.conversationId, group: true } : { conversationId: "", group: false });
   const ids = [...new Set(found.hearsay.map((h) => h.conversationId))];
   const titles = new Map<string, string>();
