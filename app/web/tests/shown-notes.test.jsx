@@ -148,6 +148,30 @@ describe("the line under my Agent's reply", () => {
     expect(within(rows()[1]).getByRole("button", { name: "以后别说" })).toBeTruthy();
   });
 
+  it.each([
+    ["its 200", vi.fn(async (id) => note(id))],
+    ["its 409 note_changed", vi.fn(async () => Promise.reject(apiError(409, "note_changed")))],
+  ])("fix round 1, F3: the same note under another reply turns into the text-free line after %s, with no live button left", async (_label, patchMemoryNote) => {
+    const watching = { ...watched(), lastSeq: 4, readSeq: 4 };
+    await openApp2(
+      [watching],
+      [wire(SO, 1, ANN, "你知道他爱吃什么吗"), wire(SO, 2, AG1, "他爱吃辣。", { shownNotes: SHOWN }), wire(SO, 3, ANN, "还有呢"), wire(SO, 4, AG1, "也爱吃甜。", { shownNotes: [SHOWN[0], SHOWN[1]] })],
+      { patchMemoryNote },
+    );
+    await othersTab();
+    await click(within(document.querySelector(".social-convs")).getAllByRole("button")[0]);
+    const item = (seq) => document.querySelector(`ol.messages li[data-msg="m${seq}"]`);
+    const rowsOf = (seq) => [...item(seq).querySelectorAll(".shown-notes-block li")];
+    for (const seq of [2, 4]) await click(within(item(seq)).getByRole("button", { name: /这次能参考/ }));
+    expect(rowsOf(4)[0].textContent).toBe("主人爱吃辣以后别说");
+    await click(within(rowsOf(2)[0]).getByRole("button", { name: "以后别说" }));
+    expect(patchMemoryNote).toHaveBeenCalledTimes(1);
+    expect(rowsOf(4)[0].textContent).toBe("这条记忆后来改过");
+    expect(within(rowsOf(4)[0]).queryByRole("button")).toBeNull();
+    // Another note of that reply is untouched.
+    expect(rowsOf(4)[1].textContent).toBe("上次推荐过川菜馆以后别说");
+  });
+
   it("a reply that was shown no note has no line", async () => {
     await openWatched(null);
     expect(within(replyItem()).queryByRole("button", { name: /这次能参考/ })).toBeNull();

@@ -38,6 +38,7 @@ import {
   dismissGroupRunOf,
   dismissRunOf,
   dropWhisper,
+  forgetShownNote,
   markFailed,
   markReadDone,
   markReading,
@@ -840,10 +841,21 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
     /**
      * 以后别说 under a social reply (ring 1b): the note (`agentId` null: one about me; else that Agent's own) goes into the vault, held to the
      * reply it was pressed under (`from`: `{conversationId, seq}`) → value: the note. 409 `note_changed`: it is not as that reply was shown
-     * it any more (nothing was written).
+     * it any more (nothing was written). Either way the note is not as any reply was shown it now: every reply held that lists it reads
+     * it text-free (`forgetShownNote`, fix round 1, F3).
      */
-    vaultFromReply: (agentId, noteId, from) =>
-      attempt(() => (agentId ? api.patchAgentMemoryNote(agentId, noteId, { vault: true, from }) : api.patchMemoryNote(noteId, { vault: true, from })), memoryWrite(agentId)),
+    vaultFromReply: (agentId, noteId, from) => {
+      const forget = () => setModel(forgetShownNote(getModel(), agentId ? "self" : "owner", noteId));
+      const write = memoryWrite(agentId);
+      return attempt(() => (agentId ? api.patchAgentMemoryNote(agentId, noteId, { vault: true, from }) : api.patchMemoryNote(noteId, { vault: true, from })), {
+        ...write,
+        after: forget,
+        onFail: (error) => {
+          write.onFail(error);
+          if (error.code === "note_changed") forget();
+        },
+      });
+    },
     /** What the Agent heard: forgotten, or taken as true (it becomes one of its own notes). */
     deleteHearsay: (agentId, hearsayId) => attempt(() => api.deleteHearsay(agentId, hearsayId), memoryWrite(agentId)),
     confirmHearsay: (agentId, hearsayId) => attempt(() => api.confirmHearsay(agentId, hearsayId), memoryWrite(agentId)),

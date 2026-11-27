@@ -743,6 +743,39 @@ export function applyNewerInWindow(state, conversationId, page, n) {
   return notePosted(settled, conversationId, page.messages ?? [], false);
 }
 
+/** `list` with every `shownNotes` entry of note `kind`/`id` reading text null (the same array when none does). */
+function withoutNoteText(list, kind, id) {
+  if (!Array.isArray(list)) return list;
+  let out = list;
+  list.forEach((m, i) => {
+    if (!Array.isArray(m?.shownNotes) || !m.shownNotes.some((n) => n?.kind === kind && n?.id === id && n.text !== null)) return;
+    if (out === list) out = [...list];
+    out[i] = { ...m, shownNotes: m.shownNotes.map((n) => (n?.kind === kind && n?.id === id ? { ...n, text: null } : n)) };
+  });
+  return out;
+}
+
+/**
+ * After 以后别说 on note `kind`/`id` — its 200, or a 409 `note_changed` — the note is no longer as any reply was shown it: every reply that
+ * lists it, in every conversation held (and an open window), reads its text as null, so no other list shows a stale text with a live
+ * button (ring 1b fix 1, F3). The same state when nothing held lists it.
+ */
+export function forgetShownNote(state, kind, id) {
+  let changed = false;
+  const messages = {};
+  for (const [convId, list] of Object.entries(state.messages)) {
+    messages[convId] = withoutNoteText(list, kind, id);
+    if (messages[convId] !== list) changed = true;
+  }
+  const windows = {};
+  for (const [convId, win] of Object.entries(state.windows ?? {})) {
+    const list = withoutNoteText(win.messages, kind, id);
+    windows[convId] = list === win.messages ? win : { ...win, messages: list };
+    if (list !== win.messages) changed = true;
+  }
+  return changed ? { ...state, messages, windows } : state;
+}
+
 /** Back to the newest messages: the window is dropped. */
 export function closeWindow(state, conversationId) {
   return conversationId in state.windows ? { ...state, windows: without(state.windows, conversationId) } : state;
