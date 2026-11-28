@@ -5,7 +5,7 @@ import { HANDLE_PATTERN, NAME_PART_PATTERN } from "../auth/validation.js";
 import { Avatar, Btn, Field, Modal, Reason } from "../ui/primitives.jsx";
 import { socialOn } from "../state/social.js";
 import { useAction } from "./useAction.js";
-import { AgentCard, AgentRow, AgentSheet, useOfferedAgents } from "./AgentCard.jsx";
+import { AgentCard, AgentRow, AgentSheet, OfferedScope, agentIdsOf, useOfferedAgents, usePendingAdds } from "./AgentCard.jsx";
 import { FriendRequestButton, PersonAgents, PersonProfile, PersonRow, whyNot } from "./PersonProfile.jsx";
 
 /** An Agent's full account name: `<owner's handle>.<name part>`. */
@@ -91,7 +91,8 @@ function FindModal({ onClose, returnTo }) {
   const { state, actions } = useStore();
   const action = useAction();
   const { busy } = action;
-  const { offered, drop } = useOfferedAgents();
+  // (The marks of what cannot be added: this dialog's, shared by its results and every sheet and card opened from them: H2.)
+  const { offered, marks, forget } = useOfferedAgents();
   /** The number of the explicit step on its way (0: none): 查找 reads 查找中… meanwhile, and stays pressable. */
   const [finding, setFinding] = useState(0);
   const [text, setText] = useState("");
@@ -102,8 +103,8 @@ function FindModal({ onClose, returnTo }) {
   const [error, setError] = useState("");
   /** The sheet open over the dialog: {agent} (a profile) or {person, agents?}. */
   const [open, setOpen] = useState(null);
-  /** The card of the Agent found is adding it: the dialog may not be left meanwhile. */
-  const [adding, setAdding] = useState(false);
+  /** Adds on their way from this dialog, counted (H1): it may not be left while any is. */
+  const [adding, onBusy] = usePendingAdds();
   const latest = useRef(0);
   const inflight = useRef(null);
   const timer = useRef(null);
@@ -124,7 +125,10 @@ function FindModal({ onClose, returnTo }) {
     const controller = new AbortController();
     inflight.current = controller;
     const answer = await actions.searchPrincipals(query, { ...options, signal: controller.signal });
-    return mine === latest.current ? answer : null;
+    if (mine !== latest.current) return null;
+    // (A fresh answer: what it lists is offered again, also an Agent marked before: H2.)
+    forget(agentIdsOf(answer));
+    return answer;
   };
 
   useEffect(() => {
@@ -190,61 +194,63 @@ function FindModal({ onClose, returnTo }) {
   const nothing = exact === null && listed.length === 0;
 
   return (
-    <Modal title="添加好友或 Agent" onClose={onClose} returnTo={returnTo} locked={adding} footer={<Btn disabled={adding} onClick={onClose}>完成</Btn>}>
-      <div className="find-agent">
-        <form onSubmit={find}>
-          <Field label="昵称或账号名" error={error} hint="输入昵称或账号名。找不认识的人，要输入对方完整的账号名。">
-            <input
-              type="search"
-              enterKeyHint="search"
-              maxLength={100}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              autoComplete="off"
-              autoCapitalize="none"
-              spellCheck="false"
-              data-autofocus
-            />
-          </Field>
-          <Btn type="submit" variant="primary" disabled={busy !== null || !query}>
-            {finding ? "查找中…" : "查找"}
-          </Btn>
-        </form>
-        {sections.map(
-          ([title, entries]) =>
-            entries.length > 0 && (
-              <React.Fragment key={title}>
-                <h3>{title}</h3>
-                <ul className="member-rows" aria-label={title}>
-                  {entries.map((entry) =>
-                    entry.kind === "agent" ? (
-                      <AgentRow key={entry.id} agent={entry} onOpen={(found) => setOpen({ agent: found })} />
-                    ) : (
-                      <PersonRow key={entry.id} person={entry} onOpen={openPerson} />
-                    ),
-                  )}
-                </ul>
-              </React.Fragment>
-            ),
-        )}
-        {person && (
-          <>
-            <ul className="member-rows" aria-label="查找结果">
-              <PersonRow person={person} onOpen={(who) => setOpen({ person: who, agents: theirs })}>
-                <div className="member-actions">
-                  <FriendRequestButton person={person} action={action} />
-                </div>
-              </PersonRow>
-            </ul>
-            <Reason>{whyNot(state, person)}</Reason>
-            <PersonAgents person={{ ...person, displayName: state.people[person.id]?.name ?? person.displayName }} agents={theirs} onLive={onClose} />
-          </>
-        )}
-        {agent && <AgentCard key={agent.id} agent={agent} label="查找结果" onLive={onClose} onBusy={setAdding} onGone={drop} />}
-        {nothing && <p className="muted">没有找到。找不认识的人，要输入对方完整的账号名，例如 ann_li。</p>}
-      </div>
-      {open?.agent && <AgentSheet agentId={open.agent.id} profile={open.agent} onClose={() => setOpen(null)} onLive={onClose} onGone={drop} />}
-      {open?.person && <PersonProfile person={open.person} agents={open.agents ?? null} onClose={() => setOpen(null)} onLive={onClose} />}
-    </Modal>
+    <OfferedScope marks={marks}>
+      <Modal title="添加好友或 Agent" onClose={onClose} returnTo={returnTo} locked={adding} footer={<Btn disabled={adding} onClick={onClose}>完成</Btn>}>
+        <div className="find-agent">
+          <form onSubmit={find}>
+            <Field label="昵称或账号名" error={error} hint="输入昵称或账号名。找不认识的人，要输入对方完整的账号名。">
+              <input
+                type="search"
+                enterKeyHint="search"
+                maxLength={100}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck="false"
+                data-autofocus
+              />
+            </Field>
+            <Btn type="submit" variant="primary" disabled={busy !== null || !query}>
+              {finding ? "查找中…" : "查找"}
+            </Btn>
+          </form>
+          {sections.map(
+            ([title, entries]) =>
+              entries.length > 0 && (
+                <React.Fragment key={title}>
+                  <h3>{title}</h3>
+                  <ul className="member-rows" aria-label={title}>
+                    {entries.map((entry) =>
+                      entry.kind === "agent" ? (
+                        <AgentRow key={entry.id} agent={entry} onOpen={(found) => setOpen({ agent: found })} />
+                      ) : (
+                        <PersonRow key={entry.id} person={entry} onOpen={openPerson} />
+                      ),
+                    )}
+                  </ul>
+                </React.Fragment>
+              ),
+          )}
+          {person && (
+            <>
+              <ul className="member-rows" aria-label="查找结果">
+                <PersonRow person={person} onOpen={(who) => setOpen({ person: who, agents: theirs })}>
+                  <div className="member-actions">
+                    <FriendRequestButton person={person} action={action} />
+                  </div>
+                </PersonRow>
+              </ul>
+              <Reason>{whyNot(state, person)}</Reason>
+              <PersonAgents person={{ ...person, displayName: state.people[person.id]?.name ?? person.displayName }} agents={theirs} onLive={onClose} />
+            </>
+          )}
+          {agent && <AgentCard key={agent.id} agent={agent} label="查找结果" onLive={onClose} onBusy={onBusy} />}
+          {nothing && <p className="muted">没有找到。找不认识的人，要输入对方完整的账号名，例如 ann_li。</p>}
+        </div>
+        {open?.agent && <AgentSheet agentId={open.agent.id} profile={open.agent} onClose={() => setOpen(null)} onLive={onClose} />}
+        {open?.person && <PersonProfile person={open.person} agents={open.agents ?? null} onClose={() => setOpen(null)} onLive={onClose} />}
+      </Modal>
+    </OfferedScope>
   );
 }

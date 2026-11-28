@@ -8,7 +8,7 @@ import { isAgent, nameOf } from "../state/selectors.js";
 import { blockedMe, iBlocked, relationOf, socialOn } from "../state/social.js";
 import { Avatar, Btn, Modal, Reason } from "../ui/primitives.jsx";
 import { useAction } from "./useAction.js";
-import { AgentRow, AgentSheet, useOfferedAgents } from "./AgentCard.jsx";
+import { AgentRow, AgentSheet, OfferedScope, agentIdsOf, useOfferedAgents } from "./AgentCard.jsx";
 
 /** What stops me from sending this person a request, or "" when I can. */
 export function whyNot(state, person) {
@@ -64,30 +64,35 @@ export function PersonRow({ person, onOpen, children }) {
  * 「{name}的 Agent」 of `person` ({id, handle, displayName}): `agents` when in hand (the add dialog's exact step), else asked by the exact
  * step of their account name (`GET /api/principals/search?exact=1`). Nothing while asked, when there is none, or when the step was refused
  * for its limit (429: the person is shown without them, and without an error). Each opens its card over the page; `onLive()` as the card's.
- * An Agent whose add answered 404, or any of theirs once a block is known, is no longer listed (fix round 1, G2).
+ * An Agent whose add answered 404, or any of theirs once a block is known, is no longer listed (G2); the marks are the dialog's it is in
+ * (the add dialog's), else its own, given on to the cards it opens (fix round 2, H2); its own fresh answer offers its Agents again.
  */
 export function PersonAgents({ person, agents: given = null, onLive }) {
   const { actions } = useStore();
   const [asked, setAsked] = useState(null);
   const [failed, setFailed] = useState("");
-  const { offered, drop } = useOfferedAgents();
+  const { offered, marks, forget } = useOfferedAgents();
   const agents = offered(given ?? asked ?? []);
   const [open, setOpen] = useState(null);
   useEffect(() => {
     if (given) return undefined;
     let alive = true;
     actions.searchPrincipals(person.handle, { exact: true }).then(
-      (res) => alive && setAsked(res?.exact?.person?.id === person.id && Array.isArray(res.exact.agents) ? res.exact.agents : []),
+      (res) => {
+        if (!alive) return;
+        forget(agentIdsOf(res));
+        setAsked(res?.exact?.person?.id === person.id && Array.isArray(res.exact.agents) ? res.exact.agents : []);
+      },
       (error) => alive && error?.status !== 429 && setFailed(commonErrorText(error)),
     );
     return () => {
       alive = false;
     };
-  }, [actions, person.id, person.handle, given]);
+  }, [actions, person.id, person.handle, given, forget]);
 
   const title = `${person.displayName}的 Agent`;
   return (
-    <>
+    <OfferedScope marks={marks}>
       {failed && <p className="muted">{failed}</p>}
       {agents.length > 0 && (
         <>
@@ -99,8 +104,8 @@ export function PersonAgents({ person, agents: given = null, onLive }) {
           </ul>
         </>
       )}
-      {open && <AgentSheet agentId={open.id} profile={open} onClose={() => setOpen(null)} onLive={onLive} onGone={drop} />}
-    </>
+      {open && <AgentSheet agentId={open.id} profile={open} onClose={() => setOpen(null)} onLive={onLive} />}
+    </OfferedScope>
   );
 }
 

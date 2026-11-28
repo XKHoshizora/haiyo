@@ -240,11 +240,13 @@ describe("the explicit step (查找, Enter): the exact account name", () => {
     await open({ api });
     await openAdd();
     type("stranger");
-    fireEvent.submit(field().closest("form"));
-    await flush();
+    await click(inDialog().getByRole("button", { name: "查找" }));
+    expect(inDialog().getByRole("button", { name: "查找中…" })).toBeTruthy();
     type("ann");
-    fireEvent.submit(field().closest("form"));
-    await flush();
+    // (Through the button a person presses: it must not be held by the first one still on its way.)
+    const again = inDialog().getByRole("button", { name: "查找" });
+    expect(again.disabled).toBe(false);
+    await click(again);
     const exactCalls = api.searchPrincipals.mock.calls.filter(([, options]) => options?.exact);
     expect(exactCalls.map(([q]) => q)).toEqual(["stranger", "ann"]);
     expect(exactCalls[0][1].signal.aborted).toBe(true);
@@ -359,6 +361,60 @@ describe("the one Agent card (D9): every way of finding an Agent ends in it", ()
     expect(button("完成").disabled).toBe(false);
     await click(button("完成"));
     expect(dialogs()).toHaveLength(0);
+  });
+
+  it("two adds on their way, the second after an edit: the dialog stays held until both have settled (the first settles first)", async () => {
+    const adds = {};
+    const tutor = profile(AGC, "dora.tutor", "家教", DORA, "朵拉");
+    const api = routes({
+      searchPrincipals: vi.fn(async (q, { exact } = {}) => (!exact ? { circle: [] } : { circle: [], exact: { agent: q === "stranger.guide" ? STRANGER.agents[0] : tutor } })),
+      addAgentContact: vi.fn((id) => {
+        adds[id] = deferred();
+        return adds[id].promise;
+      }),
+    });
+    await open({ api });
+    await openAdd();
+    type("stranger.guide");
+    await click(inDialog().getByRole("button", { name: "查找" }));
+    await click(inDialog().getByRole("button", { name: "添加向导" }));
+    type("dora.tutor");
+    await click(inDialog().getByRole("button", { name: "查找" }));
+    await click(inDialog().getByRole("button", { name: "添加家教" }));
+    expect(button("完成").disabled).toBe(true);
+    const waits = { state: "requested", until: new Date(NOW + 7 * 86_400_000).toISOString() };
+    await act(async () => adds[AGS].resolve(waits));
+    await flush();
+    expect(button("完成").disabled).toBe(true);
+    fireEvent.keyDown(window, { key: "Escape" });
+    await flush();
+    expect(dialogs()).toHaveLength(1);
+    await act(async () => adds[AGC].resolve(waits));
+    await flush();
+    expect(button("完成").disabled).toBe(false);
+  });
+
+  it("a 404 in a person's profile: the same Agent is no longer offered in the result behind it; a fresh answer that lists it offers it again", async () => {
+    const api = routes({ searchPrincipals: vi.fn(async (q, { exact } = {}) => (exact ? { circle: [], exact: STRANGER } : { circle: [] })) });
+    api.addAgentContact.mockRejectedValueOnce(apiError(404, "not_found"));
+    await open({ api });
+    await openAdd();
+    type("stranger");
+    await click(inDialog().getByRole("button", { name: "查找" }));
+    await click(within(inDialog().getByRole("list", { name: "查找结果" })).getByRole("button", { name: /陌生人/ }));
+    await click(within(top().getByRole("list", { name: "陌生人的 Agent" })).getByRole("button", { name: /向导/ }));
+    await click(top().getByRole("button", { name: "添加向导" }));
+    expect(toastText()).toBe("操作没有成功，请稍后再试。");
+    await click(top().getByRole("button", { name: "关闭" }));
+    expect(top().queryByRole("list", { name: "陌生人的 Agent" })).toBeNull();
+    await click(top().getByRole("button", { name: "关闭" }));
+    expect(dialogs()).toHaveLength(1);
+    expect(inDialog().queryByRole("list", { name: "陌生人的 Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "添加向导" })).toBeNull();
+    // 查找 again: the service lists it (visible to me again): it is offered again, with its 添加.
+    await click(inDialog().getByRole("button", { name: "查找" }));
+    await click(within(inDialog().getByRole("list", { name: "陌生人的 Agent" })).getByRole("button", { name: /向导/ }));
+    expect(top().getByRole("button", { name: "添加向导" })).toBeTruthy();
   });
 
   it("blocking someone drops the rows of their Agents (the search's, a contact card's) and a card of theirs that is open stops being actionable", async () => {
@@ -529,6 +585,12 @@ describe("an Agent in a group (D1, D10)", () => {
     expect(screen.queryByRole("button", { name: "添加厨师" })).toBeNull();
     expect(within(memberRow("厨师")).getAllByRole("button").map((b) => b.textContent)).toEqual(["移除"]);
     expect(api.addAgentContact).not.toHaveBeenCalled();
+    // Closed, not hidden: the switch back on brings the member buttons back, and no card with them.
+    app.env.sync = () => ({ ...syncOf([groupWith([AGG])], [], GROUP_PRINCIPALS), social: { enabled: true } });
+    await act(async () => app.layer.actions.syncNow());
+    await flush();
+    expect(within(memberRow("厨师")).getAllByRole("button")).toHaveLength(2);
+    expect(dialogs()).toHaveLength(0);
   });
 
   it("the switch turned off while a person's profile is open from the details panel: it closes", async () => {
@@ -542,6 +604,12 @@ describe("an Agent in a group (D1, D10)", () => {
     app.env.sync = () => syncOf([groupWith()], [], GROUP_PRINCIPALS);
     await act(async () => app.layer.actions.syncNow());
     await flush();
+    expect(dialogs()).toHaveLength(0);
+    // Closed, not hidden: with the switch back on the profile does not come back by itself.
+    app.env.sync = () => ({ ...syncOf([groupWith()], [], GROUP_PRINCIPALS), social: { enabled: true } });
+    await act(async () => app.layer.actions.syncNow());
+    await flush();
+    expect(within(document.querySelector(".side-col")).getByRole("button", { name: /阿波/ })).toBeTruthy();
     expect(dialogs()).toHaveLength(0);
   });
 
