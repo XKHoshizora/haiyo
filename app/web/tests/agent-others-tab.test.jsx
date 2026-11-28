@@ -50,7 +50,7 @@ const contactsOf = (over = {}) => ({
 });
 
 const rail = (name) => within(screen.getByRole("navigation", { name: "主导航" })).getByRole("button", { name });
-async function openTab({ contacts = contactsOf(), convs = [], api = {}, friends = [] } = {}) {
+async function openTab({ contacts = contactsOf(), convs = [], api = {}, friends = [], agentContacts = () => ({ mine: [], waiting: [] }) } = {}) {
   const agents = [agentOf(AG1, { intro: "陪你规划旅行", model: { source: "site", id: "free-1" } })];
   const principals = [...PRINCIPALS, agentPrincipal(AG1)];
   const lane = {
@@ -65,7 +65,7 @@ async function openTab({ contacts = contactsOf(), convs = [], api = {}, friends 
     sync: () => ({ ...syncOf([agentConv(A1, AG1), ...convs], [wire(sid(1), 1, ANN, "你好")], principals), social: { enabled: true } }),
     social: { friends, incoming: [], outgoing: [], blocked: [], blockedBy: [] },
     api: { getModels: vi.fn(async () => MODELS), listProviders: vi.fn(async () => ({ providers: [] })), getUsage: vi.fn(async () => usageOf()), listAgents: vi.fn(() => new Promise(() => {})), ...lane },
-    handlers: { agents: () => ({ agents }), models: () => MODELS },
+    handlers: { agents: () => ({ agents }), models: () => MODELS, agentContacts },
   });
   fireEvent.click(rail(/^Agent/));
   await flush();
@@ -185,6 +185,24 @@ describe("the people, the requests and the conversations", () => {
     expect(requests().queryByRole("button", { name: "同意" })).toBeNull();
     expect(requests().queryByRole("button", { name: "拒绝" })).toBeNull();
     expect(requests().getByText("已过期")).toBeTruthy();
+  });
+
+  it("once it runs out the social fetch is asked for, and the tab loads again: the service's answer has no such request, and the row goes", async () => {
+    const until = new Date(NOW + 90_000).toISOString();
+    const base = contactsOf();
+    let rows = base.rows.map((r) => (r.state === "requested" ? { ...r, until } : r));
+    let waiting = [{ agentId: AG1, subject: subject(BO, "阿波", "bob"), since: "2026-11-16T00:00:00Z", until }];
+    const { lane } = await openTab({ contacts: { ...base, rows }, agentContacts: () => ({ mine: [], waiting }) });
+    lane.getAgentContacts.mockImplementation(async () => structuredClone({ ...base, rows }));
+    expect(within(inMain().getByRole("list", { name: "申请" })).getByText("阿波")).toBeTruthy();
+    const loads = lane.getAgentContacts.mock.calls.length;
+    rows = rows.filter((r) => r.state !== "requested");
+    waiting = [];
+    await elapse(2 * 60_000);
+    await flush();
+    expect(lane.getAgentContacts.mock.calls.length).toBe(loads + 1);
+    expect(inMain().queryByRole("list", { name: "申请" })).toBeNull();
+    expect(inMain().getByText("没有等你同意的申请。")).toBeTruthy();
   });
 
   it("「小助手和别人的对话」 lists only the conversations I watch for this Agent: not another Agent's, not one I speak in, not the Agent's own", async () => {

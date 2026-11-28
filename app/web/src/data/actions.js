@@ -1142,6 +1142,8 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
     seenOthersNotice: () => call(() => api.seenOthersNotice()),
     /** Asks for a full refresh (a conversation the screen expects is not held yet). */
     syncNow: () => request({ sync: true }),
+    /** Asks for /api/social again, and with it the requests on my Agents (what a `social` push asks for): a held request ran out. */
+    refreshSocial: () => request({ social: true }),
     /** 立即重试: the connection is tried again now instead of after its back-off. */
     retryNow: () => request({ retryNow: true, sync: true }),
     // groups

@@ -603,12 +603,11 @@ function groupRunRow(agentId, slot, offersAt) {
 // at the nearest such moment ahead (`deadlinesOf`: one timer) and whenever it renders or the tab wakes, so a tab that
 // slept past one is right at once. The service's own answer to a press in a race stays the word (409).
 
-/** Whether the moment `iso` (if any) has come by `now`. */
-const hasCome = (iso, now) => typeof iso === "string" && Date.parse(iso) <= now;
+// (Whether such a moment has come: deadline.js `isPast`, the one rule of a deadline, a request's too.)
 /** A run as of `now`: past its `retryableUntil`, no longer offered 重试. */
-const offerAsOf = (run, now) => (run && run.retryable && hasCome(run.retryableUntil, now) ? { ...run, retryable: false } : run);
+const offerAsOf = (run, now) => (run && run.retryable && isPast(run.retryableUntil, now) ? { ...run, retryable: false } : run);
 /** A whisper as of `now`: an open one past its `openUntil` reads expired (its buttons and its dot go). */
-const whisperAsOf = (w, now) => (w.status === "open" && hasCome(w.openUntil, now) ? { ...w, status: "expired" } : w);
+const whisperAsOf = (w, now) => (w.status === "open" && isPast(w.openUntil, now) ? { ...w, status: "expired" } : w);
 
 /** Every such moment the held model knows of, as ms (offers still made), for the store's one timer. */
 export function deadlinesOf(model) {

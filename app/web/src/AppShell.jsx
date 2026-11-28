@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "./data/store.jsx";
 import { entity, isMyAgent, unreadTotal, waitingForMe } from "./state/selectors.js";
+import { lapsedRequests } from "./state/social.js";
 import { readOthersUse, storeOf } from "./data/othersUseCache.js";
 import { ME } from "./data/identities.js";
 import { Avatar, BrandMark, IconBtn, LoadingRow } from "./ui/primitives.jsx";
@@ -153,6 +154,29 @@ function useOpenWhenPresent(state, dispatch) {
   }, [opening, dispatch]);
 }
 
+/**
+ * A request held here that runs out on the page's one clock (state/social.js `lapsedRequests`) is asked about: the social fetch a `social` push
+ * makes. The service lists open requests only, so its answer takes the request off every page (its row, the number on 通讯录, the Agent's
+ * 「别人」 tab, which loads again with it), and the card offers 添加好友 again. Until that answer, and whenever the service still lists it,
+ * it reads 已过期 with nothing to press. Once per request and deadline: when the answer still lists it (this clock runs ahead of the
+ * service's) nothing is asked again for it; only a new deadline is asked about. Several that run out together are one fetch. Nothing while
+ * the first sync is not in or the connection is not live: a reconnect fetches social anyway.
+ */
+function useRefetchLapsed(state, actions) {
+  const now = useNow();
+  const asked = useRef(new Set());
+  const lapsed = state.loaded ? lapsedRequests(state, now).join("\n") : "";
+  const live = state.loaded && state.connection === "live";
+  useEffect(() => {
+    if (!live) return;
+    const keys = lapsed ? lapsed.split("\n") : [];
+    const fresh = keys.some((key) => !asked.current.has(key));
+    // (Only the ones still held are remembered: the set never grows past what is on the page.)
+    asked.current = new Set(keys);
+    if (fresh) actions.refreshSocial();
+  }, [lapsed, live, actions]);
+}
+
 /** A detached search window belongs to the conversation that is open: once another one is, the window is dropped. */
 function useDropStrayWindows(state, actions) {
   const stray = Object.values(state.convs)
@@ -208,6 +232,7 @@ export default function Shell() {
   useCloseWhenRemoved(state, dispatch);
   useOpenWhenPresent(state, dispatch);
   useDropStrayWindows(state, actions);
+  useRefetchLapsed(state, actions);
   useShellOpen(); // (A tapped notification of the iOS app: nothing in a browser.)
   const { nav } = state;
   const conv = state.convs[nav.convId];

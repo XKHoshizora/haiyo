@@ -1,4 +1,5 @@
 // Humans-only reads of the social state (people, relations, blocks) the contact and group pages share.
+import { isPast } from "../data/deadline.js";
 import { ME } from "../data/identities.js";
 import { nameOf } from "./selectors.js";
 
@@ -51,6 +52,22 @@ export const socialOn = (state) => state.social?.enabled === true;
 export function agentContactsOf(state) {
   if (!socialOn(state) || !state.agentContacts) return { mine: [], waiting: [] };
   return { mine: state.agentContacts.mine ?? [], waiting: state.agentContacts.waiting ?? [] };
+}
+
+/**
+ * The requests held here whose deadline has passed at `now` (data/deadline.js `isPast`), each as a key naming the request and its deadline:
+ * friend requests to me and from me, the requests waiting on my Agents, my own asks of someone's Agent. The service lists open requests
+ * only, so such a one is held only until the next fetch (which the shell asks for: AppShell `useRefetchLapsed`).
+ */
+export function lapsedRequests(state, now) {
+  const keys = [];
+  for (const r of [...withStatus(state, "incoming", false), ...withStatus(state, "pending", true)]) {
+    if (isPast(r.expiresAt, now)) keys.push(`friend:${r.requestId}:${r.expiresAt}`);
+  }
+  const { mine, waiting } = agentContactsOf(state);
+  for (const w of waiting) if (isPast(w.until, now)) keys.push(`waiting:${w.agentId}:${w.subject?.id}:${w.until}`);
+  for (const m of mine) if (m.state === "requested" && isPast(m.until, now)) keys.push(`asked:${m.agentId}:${m.until}`);
+  return keys;
 }
 
 /** A conversation of the social kind (an Agent and one other person, or two Agents), whoever is looking. */

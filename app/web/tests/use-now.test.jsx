@@ -44,6 +44,22 @@ describe("useNow", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("after the page was frozen (its ticks missed), a consumer mounted then, or the page shown again, moves every consumer to the time now", async () => {
+    render(<Clock id="a" />);
+    // (Frozen: the wall clock moved on, no timer ran.)
+    vi.setSystemTime(T0 + 5 * 60_000);
+    render(<Clock id="b" />);
+    expect([read("a"), read("b")]).toEqual([T0 + 5 * 60_000, T0 + 5 * 60_000]);
+    vi.setSystemTime(T0 + 10 * 60_000);
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect([read("a"), read("b")]).toEqual([T0 + 10 * 60_000, T0 + 10 * 60_000]);
+    // (Within its period the clock is not moved by either: every consumer keeps reading the same minute.)
+    vi.setSystemTime(T0 + 10 * 60_000 + 30_000);
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    render(<Clock id="c" />);
+    expect([read("a"), read("b"), read("c")]).toEqual([T0 + 10 * 60_000, T0 + 10 * 60_000, T0 + 10 * 60_000]);
+  });
+
   it("with nothing shown it keeps no timer, and the next one starts from the time it is shown", async () => {
     render(<Clock id="a" />);
     cleanup();

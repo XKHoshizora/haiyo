@@ -159,13 +159,14 @@ describe("the number on 通讯录", () => {
     expect(badgeOf(contactsEntry())).toBeNull();
   });
 
-  it("a request that runs out leaves the number at the minute the list reads it 已过期, before any fetch drops it", async () => {
+  it("a request that runs out leaves the number at the minute the list reads it 已过期, whatever the fetch it asks for answers", async () => {
     const { transport } = await openApp({ sync: baseSync, social: socialWith({ incoming: [request("r1", PEOPLE[CY], { expiresAt: at(90_000) })] }) });
     expect(badgeOf(contactsEntry())).toBe("1");
     const fetches = transport.log.filter((x) => x === "social").length;
     await elapse(2 * 60_000);
     expect(badgeOf(contactsEntry())).toBeNull();
-    expect(transport.log.filter((x) => x === "social").length).toBe(fetches);
+    // (One fetch is asked for: tests/lapsed-requests.test.jsx. Here its answer still lists the request, as a service whose clock is behind would.)
+    expect(transport.log.filter((x) => x === "social").length).toBe(fetches + 1);
     await goContacts();
     expect(screen.getByText("小陈", { selector: ".row-name" }).closest("button").querySelector(".row-preview").textContent).toBe("申请添加你为好友 · 已过期");
   });

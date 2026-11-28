@@ -99,22 +99,36 @@ const CLOCK_MS = 60 * 1000;
 /** The one clock: its time, and who shows it. One interval runs while anything does; none while nothing does. */
 const clock = { now: 0, timer: null, shown: new Set() };
 
+/** The clock moves on: every consumer reads the new time at once. */
+function moveClock() {
+  clock.now = Date.now();
+  for (const set of clock.shown) set(clock.now);
+}
+/** A page frozen in sleep (or a suspended webview) missed its ticks: a time older than the period is read again, for everyone. */
+function freshenClock() {
+  if (clock.shown.size > 0 && Date.now() - clock.now >= CLOCK_MS) moveClock();
+}
+const shownAgain = () => {
+  if (document.visibilityState === "visible") freshenClock();
+};
+
 function showClock(setNow) {
   if (clock.shown.size === 0) {
     clock.now = Date.now();
-    clock.timer = window.setInterval(() => {
-      clock.now = Date.now();
-      for (const set of clock.shown) set(clock.now);
-    }, CLOCK_MS);
+    clock.timer = window.setInterval(moveClock, CLOCK_MS);
+    document.addEventListener("visibilitychange", shownAgain);
   }
   clock.shown.add(setNow);
-  // (Mounted in the same commit as the one that started it, or a moment after its last move: it reads the same time as the others.)
+  // (Mounted in the same commit as the one that started it, or a moment after its last move: it reads the same time as the others;
+  // after a freeze, every consumer moves to the time now.)
+  freshenClock();
   setNow(clock.now);
   return () => {
     clock.shown.delete(setNow);
     if (clock.shown.size > 0) return;
     window.clearInterval(clock.timer);
     clock.timer = null;
+    document.removeEventListener("visibilitychange", shownAgain);
   };
 }
 
