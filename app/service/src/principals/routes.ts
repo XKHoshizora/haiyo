@@ -2,8 +2,8 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { chosenModel } from "../models/choice.ts";
-import { displayName, uuidParam } from "../schemas.ts";
-import { AppError } from "../errors.ts";
+import { displayName, userText, uuidParam } from "../schemas.ts";
+import { AppError, notFound } from "../errors.ts";
 import { perPrincipalLimit } from "../limits.ts";
 import { assertModelChoice } from "../agents/store.ts";
 import { paidSiteChoice } from "../memory/call.ts";
@@ -12,18 +12,30 @@ import { setDream, setMemoryLanguage, setMemoryModel, setNewNotes } from "../mem
 import { requirePrincipal } from "../session.ts";
 import { defaultAvatarSvg } from "./avatar.ts";
 import { AVATAR_HEADERS, avatarBudget, readStoredAvatar, registerAvatarPut, storeAvatar } from "./avatar-upload.ts";
+import { circleOf, exactMatch, findAgentProfile } from "./search.ts";
 import { AGENT_HANDLE_PATTERN, changeHandle, findAgentByHandle, findAvatarSubject, findByHandle, HANDLE_PATTERN, swapAvatarKey, updateDisplayName } from "./store.ts";
 
 const publicPrincipal = z.object({ id: z.string(), handle: z.string(), displayName: z.string(), avatarVersion: z.number() });
-/** A discoverable Agent as a lookup answers it (plan A2): its profile and its owner's name. First in the union: a person has no `kind`. */
-const agentCard = publicPrincipal.extend({ kind: z.literal("agent"), ownerId: z.string(), ownerName: z.string(), intro: z.string(), field: z.string() });
+/** A discoverable Agent as anyone it is discoverable to sees it (find-agent design, R2, D1, D7): no `field`. A person has no `kind`. */
+const agentProfile = publicPrincipal.extend({ kind: z.literal("agent"), ownerId: z.string(), ownerName: z.string(), intro: z.string() });
+/** A discoverable Agent as a lookup answers it (plan A2): its profile and its field. First in the union: a person has no `kind`. */
+const agentCard = agentProfile.extend({ field: z.string() });
+/** What a search answers (find-agent design, D4, D6, D7): the circle, and with `exact=1` the exact match. */
+const searchAnswer = z.object({
+  circle: z.array(z.union([agentProfile.extend({ via: z.enum(["friend", "group", "contact"]) }), publicPrincipal])),
+  exact: z.union([z.object({ person: publicPrincipal, agents: z.array(agentProfile) }), z.object({ agent: agentProfile }), z.null()]).optional(),
+});
+/** A search's text: one line of at most 100 characters, trimmed, a leading `@` dropped; empty finds nobody. */
+const searchText = userText(0, 100, { singleLine: true }).transform((s) => s.replace(/^@/, "").trim());
 
 export function registerPrincipalRoutes(app: FastifyInstance): void {
   const { db, blobs } = app.deps;
   const api = app.withTypeProvider<ZodTypeProvider>();
 
-  // Handle lookup is the only way to probe for handles, so it is throttled per principal.
+  // Handle lookup is the only way to probe for handles, so it is throttled per principal; a search's explicit step is one too, in
+  // the same budget. What a search suggests as one types reaches the caller's own circle only: a budget of its own, larger.
   const lookupLimit = perPrincipalLimit(app, 30);
+  const suggestLimit = perPrincipalLimit(app, 120);
   // With the site's Agent social switch off the lookup is what it always was: a dotted handle is not a handle (400).
   const lookupHandle = app.deps.config.social.enabled ? z.union([z.string().regex(HANDLE_PATTERN), z.string().regex(AGENT_HANDLE_PATTERN)]) : z.string().regex(HANDLE_PATTERN);
   // Others see both everywhere (and every avatar is a blob write): 10 changes a minute each; the avatar budget also
@@ -129,6 +141,48 @@ export function registerPrincipalRoutes(app: FastifyInstance): void {
         ? await findAgentByHandle(db, req.query.handle, me.id, app.deps.config)
         : await findByHandle(db, req.query.handle);
       if (!found) throw new AppError(404, "not_found");
+      return found;
+    },
+  );
+
+  // Finding someone's Agent (find-agent design): both routes are Agent social's, 404 while its switch is off (asked at each request,
+  // after the session, as the routes of agent-contact-routes.ts ask it), and neither logs what it was asked or what it found.
+  const requireSocial = (): void => {
+    if (!app.deps.config.social.enabled) throw notFound();
+  };
+
+  api.get(
+    "/api/principals/search",
+    {
+      schema: {
+        params: z.object({}),
+        querystring: z.object({ q: searchText, exact: z.literal("1").optional() }),
+        response: { 200: searchAnswer },
+      },
+    },
+    async (req) => {
+      const me = await requirePrincipal(req);
+      requireSocial();
+      // Typing suggests the circle only; the exact step (Enter, 查找) is a lookup, in the lookup's budget (D6).
+      const explicit = req.query.exact !== undefined;
+      await (explicit ? lookupLimit : suggestLimit)(req, me.id);
+      const term = req.query.q;
+      const circle = term === "" ? [] : await circleOf(db, me.id, term, app.deps.config);
+      if (!explicit) return { circle };
+      return { circle, exact: term === "" ? null : await exactMatch(db, me.id, term, app.deps.config) };
+    },
+  );
+
+  api.get(
+    "/api/principals/agent-card/:id",
+    // Any string: a malformed id is answered as a hidden or missing Agent is (D1), not as a malformed request.
+    { schema: { params: z.object({ id: z.string() }), querystring: z.object({}), response: { 200: agentProfile } } },
+    async (req) => {
+      const me = await requirePrincipal(req);
+      requireSocial();
+      const id = uuidParam.safeParse(req.params.id);
+      const found = id.success ? await findAgentProfile(db, id.data, me.id, app.deps.config) : null;
+      if (!found) throw notFound();
       return found;
     },
   );

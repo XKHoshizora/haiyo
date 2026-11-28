@@ -68,7 +68,8 @@ describe("web client served from WEB_DIST", () => {
   });
 
   test("/, /index.html and the fallback are index.html with no-cache and the security headers", async () => {
-    for (const url of ["/", "/index.html", "/signin", "/some/deep/path", "/chat/12?x=1", "/reset-password?token=abc"]) {
+    // `/a/<Agent id>` is an Agent's share link (find-agent design, D2, D3): the client's page, which takes the path.
+    for (const url of ["/", "/index.html", "/signin", "/some/deep/path", "/chat/12?x=1", "/reset-password?token=abc", "/a/6a0d4c2e-1b3f-4a5e-9c7d-8e9f0a1b2c3d", "/a/6A0D4C2E-1B3F-4A5E-9C7D-8E9F0A1B2C3D"]) {
       const r = await get(url);
       expect([url, r.statusCode, r.body]).toEqual([url, 200, INDEX]);
       expect(r.headers["content-type"]).toMatch(/^text\/html/);

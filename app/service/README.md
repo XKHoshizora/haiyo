@@ -592,7 +592,7 @@ too — and holds the reply worker's loop until the truncate has ended; the hub'
   byte for byte. Two intended exceptions, for people only: any person has an avatar and can be blocked. An Agent
   has neither for anybody else: its id on the avatar route (unless it is your Agent, or you and it are both current
   members of one conversation) and on the block routes (also your own Agent's) is answered exactly as an id that does
-  not exist.
+  not exist; so is it on `GET /api/principals/agent-card/:id` unless it is discoverable to you.
 - **HEAD.** Every `GET` route also answers `HEAD` with the same status and headers and no body (Fastify
   runs the `GET` handler). `HEAD /api/attachments/:id` and `HEAD /api/principals/:id/avatar` are their own routes (below): they do not read the whole file.
 - **Order of checks.** Cross-site `Origin` (403) → shape of path, query and body (400) → session (401) → the terms accepted (403 `terms_required`) →
@@ -651,7 +651,8 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 | `POST /api/auth/sign-in/email` | 10 per client address + e-mail, and 60 per client address | address (+ e-mail, trimmed and lower-cased) |
 | `POST /api/auth/request-password-reset` | 10 per client address + e-mail, and 60 per client address (counters of its own) | address (+ e-mail) |
 | `GET /api/auth/verify-email` | 10 per client address + the e-mail the link names, and 60 per client address (counters of its own) | address (+ e-mail) |
-| `GET /api/principals/lookup` | 30 | principal |
+| `GET /api/principals/lookup` + `GET /api/principals/search` with `exact=1` | 30 together | principal |
+| `GET /api/principals/search` without `exact` (the suggestions typed along) | 120 (a budget of its own) | principal |
 | `GET /api/usage` | 60 | principal |
 | `GET /api/models` | 120 | principal |
 | `PATCH /api/me` | 10 | principal |
@@ -2817,7 +2818,56 @@ read (to tell its type), never the whole file. `Content-Length` is only sent for
   caller when it is not deleted or disabled, its contact policy is not `none`, no block lies either way between the caller and its
   owner or the Agent, the switch is on and the caller is not its owner. 404 `not_found` — also for a handle a person gave up
   (Handles), an Agent's name part and every Agent that is not discoverable, exactly as for one nobody has (the answer never says why).
-- Limit: 30 per minute, found or not (the limit is what stops probing for handles).
+- Limit: 30 per minute, found or not (the limit is what stops probing for handles), together with the explicit step of
+  `GET /api/principals/search` (`exact=1`).
+- Unchanged by the search below: existing callers keep it as it is.
+
+#### `GET /api/principals/search`
+
+*Session: required.* Finds people and Agents to add (Agent social; 404 `not_found` for every request while `SOCIAL.enabled` is
+off, after the session is checked and before anything is read or counted). Who can be listed to you has two sources and no third:
+
+1. **Your circle**, matched by any fragment of a name: your current friends; the Agents your current friends own; the Agents that
+   are current members of a group (`type` `group`: no social conversation, no direct chat) you are a current member of now — not
+   after you or it left or was removed; and the Agents with a row of `agent_contacts` whose subject is you, in any state (an Agent
+   your own Agent was let in to is not one: its subject is your Agent).
+2. **One exact handle**, only when asked (`exact=1`: the client's Enter or 查找, never while typing): a person and their Agents,
+   or one Agent by its full handle. Nobody outside your circle is ever found by a fragment.
+
+Every Agent in either passes the rule of discovery (the lookup's: not deleted or disabled, its contact policy not `none`, no
+block either way between you and its owner or the Agent, not your own), inside the statement that finds it, before anything is
+ordered, counted or cut: a hidden Agent is answered exactly as one that does not exist — the same status, the same body, the same
+others around it, the same number of statements.
+
+- Query: `q`, one line of at most 100 characters (a control character, a lone surrogate or more: 400 `invalid_request`),
+  trimmed, a leading `@` dropped; empty finds nobody (200, an empty circle). `exact`: absent, or `1` (anything else 400).
+- 200 `{"circle": [Entry]}`, and with `exact=1` `{"circle": [Entry], "exact": Exact}`.
+- **Entry**: a friend `{"id", "handle", "displayName", "avatarVersion"}`; an Agent its **profile** `{"id", "handle",
+  "displayName", "avatarVersion", "kind": "agent", "ownerId", "ownerName", "intro"}` (the lookup's card without `field`) and
+  `"via": "friend" | "group" | "contact"` — its first source, in that order; each Agent once. Matching: `q` is a substring of
+  the name, case ignored, every character itself (`%`, `_` and `\` are plain characters): a friend's display name or handle; an
+  Agent's name, its full handle (so its name part and its owner's handle) or its owner's display name. Order: friends, friends'
+  Agents, group Agents, contacts, each by name; at most 20. A friend you block or who blocks you is still listed (they are in
+  your `friends`), their Agents are not.
+- **Exact**: `q` lower-cased. A person's handle shape (`^[a-z0-9_]{3,24}$`) and such a person: `{"person": {"id", "handle",
+  "displayName", "avatarVersion"}, "agents": [profile]}` — the person as the lookup answers them (also yourself, also when a block
+  lies either way: then `agents` is empty), and every Agent of theirs discoverable to you, by name, no pages (at most the largest
+  number `AGENT_TIERS` lets an account own). An Agent's full handle shape and a discoverable Agent of it: `{"agent": profile}`.
+  Anything else — nobody has the handle, a handle given up (Handles), an Agent that is not discoverable, no handle's shape — `null`.
+- Limit: without `exact`, 120 per minute (a budget of its own: the client may drop a 429 there quietly and keep its last list);
+  with `exact=1`, the lookup's 30 per minute, together with it.
+- Nothing of it is logged: the request log shows the path without its query (as for every route), and the route writes no line.
+
+#### `GET /api/principals/agent-card/:id`
+
+*Session: required.* An Agent's profile by its id (a tap on a group's member; the share link `APP_ORIGIN/a/<Agent id>`, which
+the web client's page takes, `/a/*` being one of its paths): 200 `{"id", "handle", "displayName", "avatarVersion", "kind":
+"agent", "ownerId", "ownerName", "intro"}` while the Agent is discoverable to you (as for `GET /api/principals/search`). 404
+`not_found` otherwise, exactly the same for an Agent that is hidden from you (also one in a group with you that takes no contacts),
+for one that does not exist or was deleted, for your own, for a person's id and for an id that is no id (any string is taken: a
+malformed one is not a 400); a hidden Agent and a missing one in the same number of statements. 404 for every request while
+`SOCIAL.enabled` is off. Not rate-limited, as the avatar by id is not: an Agent's id cannot be guessed, it is learnt from a
+handle (rate-limited), a group one shares with it, or a link someone gave.
 
 ### Friends and blocks
 
@@ -3205,7 +3255,9 @@ between.
 
 People other than an Agent's owner reach it in a conversation of its own kind, `agent_social`: two participants (a person
 and the Agent) who speak, and the Agent's owner who watches (role `observer`, shown as 主人) and may write in it. They find
-the Agent by its full handle (`GET /api/principals/lookup`), are let in by the owner's one setting (「谁可以添加<Agent 名>」:
+the Agent in their circle by any fragment of a name, among a person's Agents by that person's exact handle, or by its full handle
+(`GET /api/principals/search`; `GET /api/principals/lookup`), or open its profile by id from a group or a share link
+(`GET /api/principals/agent-card/:id`) — finding grants nothing: every way ends in `POST /api/agent-contacts` —, are let in by the owner's one setting (「谁可以添加<Agent 名>」:
 `需要我同意` by default, `我的好友可以直接添加`, `不让别人添加`), and cost the owner at most their one number a day. Every way access
 ends stops the work in flight. Two rings: **1a** (access, the conversation, the numbers, the persona aid), which is what the
 routes below are, and **1b** (what a reply to someone else may be shown of its owner's notes, and the owner's view of it: below,
@@ -3222,7 +3274,8 @@ What a reply could refer to).
   persona aid). All of it is behind `SOCIAL.enabled` (`{"enabled": false}` by default).
 
 **While `SOCIAL.enabled` is off:** every route of this section answers 404, but the three under `/api/me/others-…` and
-`DELETE /api/bars/:personId` (below); the lookup finds people only (an Agent's dotted handle is 400, as a malformed one);
+`DELETE /api/bars/:personId` (below), and so do `GET /api/principals/search` and `GET /api/principals/agent-card/:id` (Profiles
+and principals); the lookup finds people only (an Agent's dotted handle is 400, as a malformed one);
 no social conversation is created or written in, and a reply queued in one ends (`access_ended`) instead of answering later;
 the persona aid reads nothing and stamps nothing; `/api/sync` says `"social": {"enabled": false}` and the web draws none of
 it. Groups behave exactly as with it on (the same model call, the same posted message, the same frames:

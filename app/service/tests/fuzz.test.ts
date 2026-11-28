@@ -596,6 +596,8 @@ describe("fuzz", () => {
       "GET /api/health",
       "POST /api/register",
       "GET /api/principals/lookup",
+      "GET /api/principals/search",
+      "GET /api/principals/agent-card/:id",
       "PUT /api/me/avatar",
       "POST /api/friend-requests/:id/accept",
       "DELETE /api/conversations/:id/members/:principalId",

@@ -29,6 +29,10 @@ describe("an app started with the switch off", () => {
       ["DELETE", `/api/bars/${other.id}`],
       ["POST", "/api/reports", { agentId: agent.id, reason: "spam" }],
       ["POST", `/api/agents/${agent.id}/persona-facts/1`, { move: false }],
+      // Finding someone's Agent (find-agent design): the search, typed and explicit, and the card by id.
+      ["GET", `/api/principals/search?q=${owner.handle}`],
+      ["GET", `/api/principals/search?q=${owner.handle}&exact=1`],
+      ["GET", `/api/principals/agent-card/${agent.id}`],
     ];
     for (const [method, path, body] of routes) {
       for (const who of [owner, other]) expect([method, path, (await api(app, who, method, path, body)).status]).toEqual([method, path, 404]);
