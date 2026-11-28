@@ -36,7 +36,7 @@ describe("on a phone", () => {
     expect(document.querySelector(".app").dataset.tabbar).toBe("on");
     const names = within(bar()).getAllByRole("button").map((b) => b.textContent.replace(/\d+/g, ""));
     expect(names).toEqual(["消息", "通讯录", "Agent", "设置"]);
-    expect(within(bar()).getByRole("button", { name: /消息$/ }).getAttribute("aria-current")).toBe("page");
+    expect(within(bar()).getByRole("button", { name: "消息，2 条未读" }).getAttribute("aria-current")).toBe("page");
     expect(bar().querySelector(".badge").textContent).toBe("2");
     expect(bar().querySelector(".brand-mark")).toBeNull();
     expect(bar().querySelector(".rail-me")).toBeNull();

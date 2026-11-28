@@ -39,7 +39,7 @@ test("the rail is a tab bar along the bottom on the top-level lists and is gone 
   const entries = bar(page).getByRole("button");
   await expect(entries).toHaveCount(4);
   for (const entry of await entries.all()) expect((await entry.boundingBox()).height).toBeGreaterThanOrEqual(44);
-  await expect(bar(page).getByRole("button", { name: /消息$/ })).toHaveAttribute("aria-current", "page");
+  await expect(bar(page).getByRole("button", { name: /^消息/ })).toHaveAttribute("aria-current", "page");
   // The unread badge, on 消息.
   await expect(bar(page).locator(".badge")).toHaveText("1");
   // No left rail: the list starts at the left edge.
@@ -59,7 +59,7 @@ test("the rail is a tab bar along the bottom on the top-level lists and is gone 
   await polishShot(page, "mobile-tabbar-settings");
 
   // Into a conversation: no bar; the composer is at the bottom of the screen; back returns to the list with the bar.
-  await bar(page).getByRole("button", { name: /消息$/ }).click();
+  await bar(page).getByRole("button", { name: /^消息/ }).click();
   const chat = await openChat(page, bo.displayName);
   await expect(bar(page)).toHaveCount(0);
   const composerBox = await chat.getByRole("textbox", { name: "消息内容" }).boundingBox();
@@ -572,14 +572,14 @@ test("N1 at 390: a tab is its section's list — after creating an Agent, Back i
   await expect(bar(page)).toBeVisible();
   // 消息 is the list of conversations with the tab bar; tapped again it stays there.
   for (let i = 0; i < 2; i += 1) {
-    await bar(page).getByRole("button", { name: /消息$/ }).click();
+    await bar(page).getByRole("button", { name: /^消息/ }).click();
     await expect(page).toHaveURL(/\/$/);
     expect(new URL(page.url()).pathname).toBe("/");
     await expect(bar(page)).toBeVisible();
     await expect(listRow(page, name).first()).toBeVisible();
     await expect(chat).toBeHidden();
   }
-  await expect(bar(page).getByRole("button", { name: /消息$/ })).toHaveAttribute("aria-current", "page");
+  await expect(bar(page).getByRole("button", { name: /^消息/ })).toHaveAttribute("aria-current", "page");
   // The chat is one tap away, and its 返回列表 is the list again.
   await listRow(page, name).first().click();
   expect(new URL(page.url()).pathname).toBe(chatPath);
@@ -588,7 +588,7 @@ test("N1 at 390: a tab is its section's list — after creating an Agent, Back i
   await expect(bar(page)).toBeVisible();
   // The same from another tab: Agent, then 消息, is the list.
   await bar(page).getByRole("button", { name: "Agent" }).click();
-  await bar(page).getByRole("button", { name: /消息$/ }).click();
+  await bar(page).getByRole("button", { name: /^消息/ }).click();
   expect(new URL(page.url()).pathname).toBe("/");
   await expect(bar(page)).toBeVisible();
 });
@@ -687,7 +687,7 @@ test("profile-style headers at 320 and 375: the title keeps a sensible width (a 
     expect(await noSideways(page)).toBe(true);
     await page.getByRole("button", { name: /^返回/ }).first().click();
     // Group info.
-    await bar(page).getByRole("button", { name: /消息$/ }).click();
+    await bar(page).getByRole("button", { name: /^消息/ }).click();
     // (On a phone a tab is its section's list: 消息 is the conversation list with the tab bar, never the chat that was open last.)
     await expect(page).toHaveURL(/\/$/);
     await expect(bar(page)).toBeVisible();
@@ -706,7 +706,7 @@ test("profile-style headers at 320 and 375: the title keeps a sensible width (a 
     await page.getByText("我的资料", { exact: true }).first().click();
     await check(page.locator("section.page .profile-head").first(), `my profile at ${width}`);
     await page.getByRole("button", { name: /^返回/ }).first().click();
-    await bar(page).getByRole("button", { name: /消息$/ }).click();
+    await bar(page).getByRole("button", { name: /^消息/ }).click();
   }
   await polishShot(page, "mobile-profile-header-320");
 });

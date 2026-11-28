@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "./data/store.jsx";
-import { entity, isMyAgent, unreadTotal } from "./state/selectors.js";
+import { entity, isMyAgent, unreadTotal, waitingForMe } from "./state/selectors.js";
 import { readOthersUse, storeOf } from "./data/othersUseCache.js";
 import { ME } from "./data/identities.js";
 import { Avatar, BrandMark, IconBtn, LoadingRow } from "./ui/primitives.jsx";
@@ -21,10 +21,12 @@ import { ContactsList, ContactCard } from "./pages/Contacts.jsx";
 import { AgentsList, AgentMain } from "./pages/Agents.jsx";
 import { SettingsList, SettingsMain } from "./pages/Settings.jsx";
 import { SharedAgent } from "./pages/AgentCard.jsx";
+import { useNow } from "./pages/useAction.js";
 
+// `counts`: what an entry's number is, as its name says it to a screen reader (「消息，2 条未读」).
 const NAV = [
-  { id: "chat", label: "消息", icon: MessageCircle },
-  { id: "contacts", label: "通讯录", icon: Users },
+  { id: "chat", label: "消息", icon: MessageCircle, counts: "条未读" },
+  { id: "contacts", label: "通讯录", icon: Users, counts: "条待处理" },
   { id: "agents", label: "Agent", icon: Bot },
 ];
 
@@ -36,7 +38,9 @@ const NAV = [
  */
 function Rail({ phone, onePane }) {
   const { state, dispatch } = useStore();
-  const unread = unreadTotal(state);
+  // (The clock: a request that runs out leaves 通讯录's number at the minute the contacts page reads it 已过期.)
+  const now = useNow();
+  const numbers = { chat: unreadTotal(state), contacts: waitingForMe(state, now) };
   // Where two panes show, a section is the last address seen in it (its list if it was left on the list). Where one pane shows, it is
   // always its list: the page last seen there may be a conversation opened from another section, which fills the screen and has no
   // tab bar — a tab that opened it again would keep the list out of reach. A push like any other; the address says what is drawn.
@@ -50,15 +54,25 @@ function Rail({ phone, onePane }) {
         </button>
       )}
       <div className="rail-nav">
-        {NAV.map(({ id, label, icon: Icon }) => (
-          <button key={id} type="button" className={`rail-item ${state.nav.section === id ? "active" : ""}`} aria-current={state.nav.section === id ? "page" : undefined} onClick={() => go(id)}>
-            <span className="rail-icon">
-              <Icon size={26} aria-hidden="true" />
-              {id === "chat" && unread > 0 && <span className="badge">{unread}</span>}
-            </span>
-            <span>{label}</span>
-          </button>
-        ))}
+        {NAV.map(({ id, label, icon: Icon, counts }) => {
+          const n = numbers[id] ?? 0;
+          return (
+            <button
+              key={id}
+              type="button"
+              className={`rail-item ${state.nav.section === id ? "active" : ""}`}
+              aria-current={state.nav.section === id ? "page" : undefined}
+              aria-label={n > 0 ? `${label}，${n} ${counts}` : undefined}
+              onClick={() => go(id)}
+            >
+              <span className="rail-icon">
+                <Icon size={26} aria-hidden="true" />
+                {n > 0 && <span className="badge">{n}</span>}
+              </span>
+              <span>{label}</span>
+            </button>
+          );
+        })}
       </div>
       <div className="rail-bottom">
         <button type="button" className={`rail-item ${state.nav.section === "settings" ? "active" : ""}`} aria-current={state.nav.section === "settings" ? "page" : undefined} onClick={() => go("settings")}>

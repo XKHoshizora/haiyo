@@ -2,7 +2,7 @@ import { ME } from "../data/identities.js";
 import { previewOfMarkdown } from "../ui/markdownPreview.js";
 import { drawnText } from "../ui/drawnText.js";
 import { PROPOSAL_ONLY } from "../data/viewmodel.js";
-import { iBlocked, isObserved, socialEnds } from "./social.js";
+import { agentContactsOf, iBlocked, incomingRequests, isObserved, socialEnds } from "./social.js";
 
 export const entity = (state, id) => state.people[id] || state.agents[id] || null;
 /** Any Agent: mine, or someone else's in a group I am in. */
@@ -125,6 +125,17 @@ export const quiet = (state, conv) => conv.type === "agent" && (conv.hold?.kind 
 /** What waits for me in the tab bar's number: every conversation but the quiet ones. */
 export function unreadTotal(state) {
   return state.order.reduce((n, id) => n + (state.convs[id] && !quiet(state, state.convs[id]) && !isObserved(state.convs[id]) ? state.convs[id].unread || 0 : 0), 0);
+}
+
+/**
+ * What waits for my answer in 通讯录's number: the friend requests sent to me, and the requests waiting on my own Agents (none while the
+ * site's Agent social switch is off: `agentContactsOf`). Requests I sent are not mine to answer. Each counts only while its deadline is
+ * ahead of `now`: the service lists open requests only, but nothing tells this page when one runs out, so a lapsed one is still held
+ * (and read 已过期 on the contacts page) until the next fetch drops it.
+ */
+export function waitingForMe(state, now = Date.now()) {
+  const open = (iso) => Date.parse(iso ?? "") > now;
+  return incomingRequests(state).filter((r) => open(r.expiresAt)).length + agentContactsOf(state).waiting.filter((w) => open(w.until)).length;
 }
 
 /** The conversations of the main list, in order: the ones I watch as my Agents' supervisor (Agent social) are in the Agent's 「别人」 tab, never here. */

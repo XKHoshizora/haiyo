@@ -3,10 +3,12 @@ import { expect } from "@playwright/test";
 
 export const rail = (page) => page.getByRole("navigation", { name: "主导航" });
 
-/** One of the rail's sections: "消息" (it may carry an unread badge), "通讯录", "设置". */
+/**
+ * One of the rail's sections: "消息", "通讯录", "Agent", "设置". An entry that carries a number is named with it (「消息，2 条未读」,
+ * 「通讯录，1 条待处理」), so the name is matched as the section's, then nothing or that number.
+ */
 export async function goTo(page, section) {
-  const name = section === "消息" ? /消息$/ : section;
-  await rail(page).getByRole("button", { name, exact: section !== "消息" }).click();
+  await rail(page).getByRole("button", { name: new RegExp(`^${section}(?:，|$)`) }).click();
 }
 
 /** A row of the conversation list (or of the contacts list) whose name is exactly `title`. */
