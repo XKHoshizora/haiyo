@@ -345,8 +345,8 @@ export function createNotifier(deps: NotifierDeps): Notifier {
   const under = new Set<Promise<unknown>>();
   const said = new Set<string>();
   /**
-   * The quiet windows (`PushKind.quietMs`: the requests'), by `<device id>:<key>`: until when no push of that key goes to that
-   * phone. Set only when APNs took one (`sent`): a phone that was present, a push no longer wanted, one that failed or went to a
+   * The quiet windows (`PushKind.quietMs`: the requests'), by `<device id>:<person>:<key>`: until when no push of that key goes
+   * to that phone for the person signed in on it (another account registering the same token starts with none). Set only when APNs took one (`sent`): a phone that was present, a push no longer wanted, one that failed or went to a
    * dead token told the person nothing. In memory (a restart forgets them); one that is over is forgotten when it is next read
    * and by the timer (`sweepExpired`), so the map holds at most the phones sent such a push in the last window.
    */
@@ -416,15 +416,17 @@ export function createNotifier(deps: NotifierDeps): Notifier {
   /**
    * The pushes of one kind: of the phones `read` gives, each pushed (`pushOne`) unless that phone's push of the same key is out
    * already — then folded into it (`PushKind.absorb`) and counted `coalesced` — or, for a kind with a quiet window, that phone is
-   * in it (`coalesced` too; asked before any probe is spent). The pushes out, by `<device id>:<key>`, are the targets as they now
-   * stand: what is folded into one is what the re-check after its probe asks about (the newest message, not the first; every
-   * request, not the first). A key is held until its push is over, and a window, when that push was sent, is set before the key
-   * is let go — in the same step, so that a push racing it finds the one or the other, never neither.
+   * in it (`coalesced` too; asked before any probe is spent). The pushes out, by `<device id>:<person>:<key>`, are the targets
+   * as they now stand: what is folded into one is what the re-check after its probe asks about (the newest message, not the
+   * first; every request, not the first). A key is held until its push is over, and a window, when that push was sent, is set
+   * before the key is let go — in the same step, so that a push racing it finds the one or the other, never neither. The person
+   * is in the key: a token registered by another account keeps its device row (devices.ts `registerDevice`), and its new person
+   * neither inherits the previous person's window nor has a push folded into one the re-check would then drop as theirs.
    */
   function pushesOf<T extends Phone>(kind: PushKind<T>): (client: ApnsClient, read: () => Promise<T[]>) => Promise<void> {
     const out = new Map<string, T>();
     async function pushOnce(client: ApnsClient, t: T): Promise<void> {
-      const key = `${t.id}:${kind.key(t)}`;
+      const key = `${t.id}:${t.principalId}:${kind.key(t)}`;
       const already = out.get(key);
       if (already) {
         kind.absorb(already, t);

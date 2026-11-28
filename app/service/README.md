@@ -3956,8 +3956,9 @@ or which Agent, and no `c` — the shell reads only `c` of a tapped notification
 **The quiet window:** once APNs took a request push for a phone (`sent`; not when it was present, no longer wanted, failed
 or its token dead), no other request push goes to that phone for `REQUEST_QUIET_MS` (10 minutes), whoever asks and
 whatever is asked — counted `coalesced`; the requests are listed in the app all the same. Without it a stranger could ring
-a phone again and again (send, withdraw, send). Per phone, in memory (a restart forgets the windows; the 10-minute timer
-forgets those that are over); message pushes have none.
+a phone again and again (send, withdraw, send). Per phone and the person signed in on it (another account registering the
+same token starts with none), in memory (a restart forgets the windows; the 10-minute timer forgets those that are over);
+message pushes have none.
 
 **The sender** (`src/push/apns.ts`). `node:http2` to `api.push.apple.com` (a `sandbox` token to
 `api.sandbox.push.apple.com`), one connection per host, kept while it lasts (closed after an hour idle, opened again on

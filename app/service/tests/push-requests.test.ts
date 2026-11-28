@@ -505,6 +505,22 @@ describe("the quiet window: after one was sent to a phone, no other for REQUEST_
     expect(app.push.flush()).toMatchObject({ sent: 5, coalesced: 1 });
   });
 
+  test("the window is the phone's and its person's: a shared phone whose token another account registers is pushed for that person's request at once", async () => {
+    const [a, b, x] = [await signUp(app, "rqqs_a"), await signUp(app, "rqqs_b"), await signUp(app, "rqqs_x")];
+    const token = await phone(a);
+    const device = (await db.query<{ id: string }>("select id from push_devices where token = $1", [token])).rows[0]!.id;
+    expect((await ask(x, a)).status).toBe(201);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([token]);
+    // b signs in on the same phone: the same token, registered from b's session, keeps the device row.
+    expect((await api(app, b, "POST", "/api/push/devices", { token, env: "production" })).status).toBe(200);
+    expect((await db.query<{ id: string; principal_id: string }>("select id, principal_id from push_devices where token = $1", [token])).rows).toEqual([{ id: device, principal_id: b.id }]);
+    expect((await ask(x, b)).status).toBe(201);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([token, token]);
+    expect(app.push.flush()).toMatchObject({ sent: 2, coalesced: 0 });
+  });
+
   test("the windows are forgotten once over: none is held after the window and the sweep", async () => {
     windowOver();
     await app.push.sweepExpired();
