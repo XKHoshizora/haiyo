@@ -219,6 +219,9 @@ export function registerAgentContactRoutes(app: FastifyInstance): void {
         if (outcome.refused === "is_yours") throw new AppError(409, "is_yours");
         throw notFound();
       }
+      // After the commit, and only for a request this call made (not one that was waiting already, not one let in at once): the
+      // owner's phone is told someone waits for their answer (src/push/notify.ts; never waited for).
+      if (outcome.state === "requested" && outcome.created) app.push.requestWaiting({ agentId: req.body.agentId, subjectId: me.id });
       await announce(req, req.body.agentId, me.id);
       if (outcome.state === "requested") return reply.code(202).send({ state: "requested" as const, until: outcome.until.toISOString() });
       return reply.code(201).send(outcome);

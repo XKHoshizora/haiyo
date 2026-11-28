@@ -482,9 +482,10 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   // (an upgrade request to any other route is then refused instead of answered over the raw socket).
   await registerSync(app, { heartbeat: options.heartbeat !== false });
 
-  // Pushes to phones (src/push/): every stored message, after commit, as the hub hears of it; the hub says whose session
-  // has a socket and whether it answers. Closed before the hub and the database (hooks run last-in first-out): the stop
-  // closes the sender first (its retry waits end at once), then waits a bounded time for what is under way.
+  // Pushes to phones (src/push/): every stored message, after commit, as the hub hears of it, and a request newly waiting for
+  // someone's answer (the friend-request and Agent-add routes call `app.push.requestWaiting` after their commit); the hub says
+  // whose session has a socket and whether it answers. Closed before the hub and the database (hooks run last-in first-out):
+  // the stop closes the sender first (its retry waits end at once), then waits a bounded time for what is under way.
   const push = createNotifier({ db: deps.db, apns: deps.apns, presence: app.realtime, conversations: deps.conversations, log: app.log, missing: config.apple.missing, malformed: config.apple.malformed, links: config.apple.app !== null, ...(options.pushTimer === false ? { everyMs: 0 } : {}) });
   app.decorate("push", push);
   app.addHook("onClose", () => push.close());
