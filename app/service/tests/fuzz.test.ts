@@ -3,6 +3,7 @@ import net from "node:net";
 import type { InjectOptions, LightMyRequestResponse } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import type { RouteEntry } from "../src/app.ts";
+import { AUTH_BASE_PATH } from "../src/auth/auth.ts";
 import { createInvite } from "../src/auth/invites.ts";
 import { lockConversation } from "../src/conversations/store.ts";
 import { appendSystem } from "../src/conversations/system.ts";
@@ -584,7 +585,9 @@ function signedInAndOut(probes: Array<InjectOptions & { label: string }>, cookie
 
 // --- the suites -----------------------------------------------------------------------------------------
 
-const isAuthMount = (r: RouteEntry) => r.url.endsWith("/*");
+// Better Auth's mount by its path: the API has another wildcard (`GET /api/principals/agent-card/*`, find-agent fix round 1, F5),
+// which is an API route like any and is fuzzed with them.
+const isAuthMount = (r: RouteEntry) => r.url === `${AUTH_BASE_PATH}/*`;
 
 describe("fuzz", () => {
   it("every route answers malformed paths, queries and bodies with < 500 and a well-formed error", { timeout: FUZZ_TIMEOUT }, async () => {
@@ -598,6 +601,7 @@ describe("fuzz", () => {
       "GET /api/principals/lookup",
       "GET /api/principals/search",
       "GET /api/principals/agent-card/:id",
+      "GET /api/principals/agent-card/*",
       "PUT /api/me/avatar",
       "POST /api/friend-requests/:id/accept",
       "DELETE /api/conversations/:id/members/:principalId",
