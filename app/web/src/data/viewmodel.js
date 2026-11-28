@@ -2,6 +2,7 @@
 // relations, blocks). The signed-in user appears as the alias id "me"; every other id is the real one.
 // Every avatar URL carries its principal's version (`avatarUrl(id, version)`), so a changed avatar shows at once.
 import { attachmentUrl, avatarUrl, groupAvatarUrl } from "../api/routes.js";
+import { isPast } from "./deadline.js";
 import { ME } from "./identities.js";
 import { mentionsIn } from "./mentions.js";
 import { ownsAgent } from "./model.js";
@@ -1113,14 +1114,14 @@ const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 
 /**
- * How long a friend request stays valid, rounded up: "24 小时内有效", "35 分钟内有效", "已过期".
+ * How long a friend request stays valid, rounded up: "24 小时内有效", "35 分钟内有效", "已过期" (deadline.js `isPast`, the one rule).
  * `expiresAt` is the service's ISO time; empty when it is missing or unreadable.
  */
 export function expiryText(expiresAt, now) {
   const ms = timeOf(expiresAt);
   if (ms === null) return "";
+  if (isPast(expiresAt, now)) return "已过期";
   const left = ms - now;
-  if (left <= 0) return "已过期";
   if (left <= HOUR_MS) return `${Math.max(1, Math.ceil(left / MINUTE_MS))} 分钟内有效`;
   return `${Math.ceil(left / HOUR_MS)} 小时内有效`;
 }

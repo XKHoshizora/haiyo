@@ -2,6 +2,7 @@ import React, { useRef, useState } from "react";
 import { useUp } from "../state/appHistory.js";
 import { useStore } from "../data/store.jsx";
 import { friendErrorText } from "../data/errorTexts.js";
+import { isPast } from "../data/deadline.js";
 import { expiryText } from "../data/viewmodel.js";
 import { ME } from "../data/identities.js";
 import { entity, isAgent, myAgents, nameOf } from "../state/selectors.js";
@@ -34,6 +35,11 @@ const REL = {
   outgoing: ["待对方确认", "pending"],
   incoming: ["待你确认", "pending"],
 };
+/**
+ * A request past its deadline (data/deadline.js `isPast`) is still held until the next fetch drops it: it reads 已过期 and offers nothing to
+ * do (the service would answer that it expired).
+ */
+const LAPSED = "已过期";
 
 export function ContactsList() {
   const { state, dispatch, actions } = useStore();
@@ -76,7 +82,7 @@ export function ContactsList() {
               <span className="row-body">
                 <span className="row-top">
                   <span className="row-name">{nameOf(state, r.id)}</span>
-                  <Tag tone="pending">{REL[r.kind][0]}</Tag>
+                  {isPast(r.expiresAt, now) ? <Tag tone="muted">{LAPSED}</Tag> : <Tag tone="pending">{REL[r.kind][0]}</Tag>}
                 </span>
                 <span className="row-sub">
                   <span className="row-preview">
@@ -152,6 +158,7 @@ export function ContactCard() {
 
   const rel = relationOf(state, id);
   const request = requestWith(state, id);
+  const lapsed = rel !== null && rel !== "friend" && isPast(request?.expiresAt, now);
   const blocked = iBlocked(state, id);
   const blockedByThem = blockedMe(state, id);
   const handle = who.handle.replace(/^@/, "");
@@ -207,21 +214,23 @@ export function ContactCard() {
               <div className="member-body">
                 <strong>{rel === "incoming" ? `${who.name} → 你` : rel === "outgoing" ? `你 → ${who.name}` : `你与${who.name}`}</strong>
                 <p className="muted">
-                  {rel === "incoming"
-                    ? `对方发起 · ${request.at} · 需要你确认 · ${expiryText(request.expiresAt, now)}`
-                    : rel === "outgoing"
-                      ? `你发起 · ${request.at} · 等待${who.name}确认 · ${expiryText(request.expiresAt, now)}`
-                      : "关系已建立，可以互相发送消息"}
+                  {lapsed
+                    ? `${rel === "incoming" ? "对方发起" : "你发起"} · ${request.at} · ${LAPSED}`
+                    : rel === "incoming"
+                      ? `对方发起 · ${request.at} · 需要你确认 · ${expiryText(request.expiresAt, now)}`
+                      : rel === "outgoing"
+                        ? `你发起 · ${request.at} · 等待${who.name}确认 · ${expiryText(request.expiresAt, now)}`
+                        : "关系已建立，可以互相发送消息"}
                 </p>
               </div>
-              <Tag tone={REL[rel][1]}>{REL[rel][0]}</Tag>
+              {lapsed ? <Tag tone="muted">{LAPSED}</Tag> : <Tag tone={REL[rel][1]}>{REL[rel][0]}</Tag>}
               <div className="member-actions">
-                {rel === "outgoing" && (
+                {!lapsed && rel === "outgoing" && (
                   <Btn small disabled={busy !== null} onClick={() => go("withdraw", () => actions.withdrawFriendRequest(request.requestId), "withdraw", "已撤回申请")}>
                     {busy === "withdraw" ? "处理中…" : "撤回"}
                   </Btn>
                 )}
-                {rel === "incoming" && (
+                {!lapsed && rel === "incoming" && (
                   <>
                     <Btn small variant="primary" disabled={busy !== null} onClick={() => go("accept", () => actions.acceptFriendRequest(request.requestId), "accept", `已添加${who.name}为好友`)}>
                       {busy === "accept" ? "处理中…" : "同意"}

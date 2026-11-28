@@ -179,8 +179,8 @@ describe("the header and the list row", () => {
     expect([...row.querySelectorAll(".tag")].map((t) => t.textContent)).toEqual(["已删除"]);
     expect(row.classList.contains("quiet")).toBe(true);
     expect(row.querySelector(".badge")).toBeNull();
-    // ...nor is it counted in the tab bar's number.
-    expect(document.querySelector(".rail .badge")).toBeNull();
+    // ...nor is it counted in the tab bar's number (消息's: 通讯录 has a number of its own).
+    expect(within(screen.getByRole("navigation", { name: "主导航" })).getByRole("button", { name: /^消息/ }).querySelector(".badge")).toBeNull();
   });
 
   it("the chip 已删除 and the quiet row come from one source, the conversation's sync entry: a record that says deleted while the entry does not changes neither", async () => {

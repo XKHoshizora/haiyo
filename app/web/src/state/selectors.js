@@ -1,3 +1,4 @@
+import { isPast } from "../data/deadline.js";
 import { ME } from "../data/identities.js";
 import { previewOfMarkdown } from "../ui/markdownPreview.js";
 import { drawnText } from "../ui/drawnText.js";
@@ -129,13 +130,12 @@ export function unreadTotal(state) {
 
 /**
  * What waits for my answer in 通讯录's number: the friend requests sent to me, and the requests waiting on my own Agents (none while the
- * site's Agent social switch is off: `agentContactsOf`). Requests I sent are not mine to answer. Each counts only while its deadline is
- * ahead of `now`: the service lists open requests only, but nothing tells this page when one runs out, so a lapsed one is still held
- * (and read 已过期 on the contacts page) until the next fetch drops it.
+ * site's Agent social switch is off: `agentContactsOf`). Requests I sent are not mine to answer. One whose deadline has passed is not counted
+ * (data/deadline.js `isPast`, the rule of its 已过期 too): the service lists open requests only, but nothing tells this page when one runs
+ * out, so a lapsed one is still held (read 已过期, with nothing to answer) until the next fetch drops it.
  */
 export function waitingForMe(state, now = Date.now()) {
-  const open = (iso) => Date.parse(iso ?? "") > now;
-  return incomingRequests(state).filter((r) => open(r.expiresAt)).length + agentContactsOf(state).waiting.filter((w) => open(w.until)).length;
+  return incomingRequests(state).filter((r) => !isPast(r.expiresAt, now)).length + agentContactsOf(state).waiting.filter((w) => !isPast(w.until, now)).length;
 }
 
 /** The conversations of the main list, in order: the ones I watch as my Agents' supervisor (Agent social) are in the Agent's 「别人」 tab, never here. */

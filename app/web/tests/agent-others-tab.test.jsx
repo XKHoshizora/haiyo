@@ -5,7 +5,7 @@ import "./markdown-ready.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { ANN, A1, AG1, BO, MODELS, PRINCIPALS, agentConv, agentOf, agentPrincipal, syncOf, usageOf, wire } from "./fixtures.js";
-import { button, click, dialog, flush, inMain, installBrowser, openApp, toastText } from "./harness.jsx";
+import { NOW, button, click, dialog, elapse, flush, inMain, installBrowser, openApp, toastText } from "./harness.jsx";
 import { POLICY_OPTIONS, policyQuestion } from "../src/pages/AgentOthers.jsx";
 
 beforeEach(installBrowser);
@@ -172,6 +172,19 @@ describe("the people, the requests and the conversations", () => {
     expect(lane.approveAgentContact).toHaveBeenCalledWith(AG1, BO);
     await click(within(inMain().getByRole("list", { name: "申请" })).getByRole("button", { name: "拒绝" }));
     expect(lane.declineAgentContact).toHaveBeenCalledWith(AG1, BO);
+  });
+
+  it("a request that runs out while the tab is shown stops offering 同意 and 拒绝 at that minute and reads 已过期 (held until the next load)", async () => {
+    const base = contactsOf();
+    const rows = base.rows.map((r) => (r.state === "requested" ? { ...r, until: new Date(NOW + 90_000).toISOString() } : r));
+    await openTab({ contacts: { ...base, rows } });
+    const requests = () => within(inMain().getByRole("list", { name: "申请" }));
+    expect(requests().getByRole("button", { name: "同意" })).toBeTruthy();
+    await elapse(2 * 60_000);
+    expect(requests().getByText("阿波")).toBeTruthy();
+    expect(requests().queryByRole("button", { name: "同意" })).toBeNull();
+    expect(requests().queryByRole("button", { name: "拒绝" })).toBeNull();
+    expect(requests().getByText("已过期")).toBeTruthy();
   });
 
   it("「小助手和别人的对话」 lists only the conversations I watch for this Agent: not another Agent's, not one I speak in, not the Agent's own", async () => {

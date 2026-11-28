@@ -38,7 +38,8 @@ const NAV = [
  */
 function Rail({ phone, onePane }) {
   const { state, dispatch } = useStore();
-  // (The clock: a request that runs out leaves 通讯录's number at the minute the contacts page reads it 已过期.)
+  // (The page's one clock, the one the contacts page and the cards read too: a request that runs out leaves 通讯录's number at the same
+  // instant its row and its card read 已过期 and stop offering an answer.)
   const now = useNow();
   const numbers = { chat: unreadTotal(state), contacts: waitingForMe(state, now) };
   // Where two panes show, a section is the last address seen in it (its list if it was left on the list). Where one pane shows, it is

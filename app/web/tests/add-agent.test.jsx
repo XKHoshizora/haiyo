@@ -5,7 +5,7 @@ import "./markdown-ready.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { AG1, BO, ME_ID, PRINCIPALS, agentPrincipal, apiError, syncOf } from "./fixtures.js";
-import { NOW, button, click, dialog, flush, goContacts, installBrowser, openApp, toastText } from "./harness.jsx";
+import { NOW, button, click, dialog, elapse, flush, goContacts, installBrowser, openApp, toastText } from "./harness.jsx";
 
 beforeEach(installBrowser);
 afterEach(() => {
@@ -227,6 +227,17 @@ describe("the contacts page", () => {
     await click(within(dialog()).getByRole("button", { name: "确认移除" }));
     expect(api.removeAgentContact).toHaveBeenCalledWith(AGB, ME_ID);
     expect(document.body.textContent).not.toContain("b8");
+  });
+
+  it("a request on my Agent that runs out while shown stops offering 同意 and 拒绝 at that minute and reads 已过期 (held until the next fetch)", async () => {
+    const lapsing = { mine: [], waiting: [{ ...contacts().waiting[0], until: new Date(NOW + 90_000).toISOString() }] };
+    await open({ convs: [visiting()], contacts: lapsing });
+    await goContacts();
+    expect(within(rowOf("阿波")).getByRole("button", { name: "同意" })).toBeTruthy();
+    await elapse(2 * 60_000);
+    expect(within(rowOf("阿波")).queryByRole("button", { name: "同意" })).toBeNull();
+    expect(within(rowOf("阿波")).queryByRole("button", { name: "拒绝" })).toBeNull();
+    expect(rowOf("阿波").querySelector(".row-preview").textContent).toBe("想加你的小助手 · 已过期");
   });
 
   it("switch off: none of those rows, and the contacts list is not asked for", async () => {

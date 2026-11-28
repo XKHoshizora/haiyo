@@ -94,12 +94,37 @@ export function useRowWrite({ after, refused } = {}) {
   return { pending: busy !== null || settling, error, setError, write };
 }
 
-/** The current time, refreshed every `everyMs` while the component is mounted (shown). */
-export function useNow(everyMs = 60 * 1000) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), everyMs);
-    return () => window.clearInterval(id);
-  }, [everyMs]);
+/** How often the page's one clock (`useNow`) moves on. */
+const CLOCK_MS = 60 * 1000;
+/** The one clock: its time, and who shows it. One interval runs while anything does; none while nothing does. */
+const clock = { now: 0, timer: null, shown: new Set() };
+
+function showClock(setNow) {
+  if (clock.shown.size === 0) {
+    clock.now = Date.now();
+    clock.timer = window.setInterval(() => {
+      clock.now = Date.now();
+      for (const set of clock.shown) set(clock.now);
+    }, CLOCK_MS);
+  }
+  clock.shown.add(setNow);
+  // (Mounted in the same commit as the one that started it, or a moment after its last move: it reads the same time as the others.)
+  setNow(clock.now);
+  return () => {
+    clock.shown.delete(setNow);
+    if (clock.shown.size > 0) return;
+    window.clearInterval(clock.timer);
+    clock.timer = null;
+  };
+}
+
+/**
+ * The current time by the page's one clock, moved on every CLOCK_MS while the component is mounted (shown). Every time that counts down
+ * reads it (the rail's number on 通讯录, the contacts list, a contact's card, the requests on my Agents): two of them never disagree about a
+ * minute, however far apart they were mounted.
+ */
+export function useNow() {
+  const [now, setNow] = useState(() => (clock.shown.size > 0 ? clock.now : Date.now()));
+  useEffect(() => showClock(setNow), []);
   return now;
 }

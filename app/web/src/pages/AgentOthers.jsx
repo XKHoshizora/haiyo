@@ -3,6 +3,7 @@
 // or asked while the switch is off; a save that would end accesses is asked first (`dryRun`) and says how many.
 import React, { useEffect, useMemo, useState } from "react";
 import { useStore } from "../data/store.jsx";
+import { isPast } from "../data/deadline.js";
 import { socialErrorText } from "../data/errorTexts.js";
 import { untilText } from "./untilText.js";
 import { lastPreview, nameOf } from "../state/selectors.js";
@@ -195,14 +196,17 @@ export function AgentOthersTab({ agent }) {
                 <strong>{r.subject.displayName}</strong>
                 <p className="muted">{r.until ? untilText(r.until, now) : ""}</p>
               </div>
-              <div className="member-actions">
-                <Btn small variant="primary" disabled={busy !== null} onClick={() => act(`approve:${r.subject.id}`, () => actions.approveAgentContact(agent.id, r.subject.id), "已同意")}>
-                  {busy === `approve:${r.subject.id}` ? "处理中…" : "同意"}
-                </Btn>
-                <Btn small disabled={busy !== null} onClick={() => act(`decline:${r.subject.id}`, () => actions.declineAgentContact(agent.id, r.subject.id), "已拒绝")}>
-                  {busy === `decline:${r.subject.id}` ? "处理中…" : "拒绝"}
-                </Btn>
-              </div>
+              {/* (One past its deadline is still held until the next load drops it: it reads 已过期 and has nothing to answer.) */}
+              {!isPast(r.until, now) && (
+                <div className="member-actions">
+                  <Btn small variant="primary" disabled={busy !== null} onClick={() => act(`approve:${r.subject.id}`, () => actions.approveAgentContact(agent.id, r.subject.id), "已同意")}>
+                    {busy === `approve:${r.subject.id}` ? "处理中…" : "同意"}
+                  </Btn>
+                  <Btn small disabled={busy !== null} onClick={() => act(`decline:${r.subject.id}`, () => actions.declineAgentContact(agent.id, r.subject.id), "已拒绝")}>
+                    {busy === `decline:${r.subject.id}` ? "处理中…" : "拒绝"}
+                  </Btn>
+                </div>
+              )}
             </li>
           ))}
         </ul>

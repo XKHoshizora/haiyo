@@ -78,6 +78,10 @@ describe("waitingForMe", () => {
       expect(waitingForMe(friend, NOW) === 1, `friend request, ${ms} ms left`).toBe(expiryText(at(ms), NOW) !== "已过期");
       expect(waitingForMe(agent, NOW) === 1, `Agent request, ${ms} ms left`).toBe(untilText(at(ms), NOW) !== "已过期");
     }
+    // (An unreadable deadline is not past, here as in the texts, which say nothing of it: the request is counted.)
+    const friend = stateOf({ incoming: [["p1", { ...asked(), expiresAt: "soon" }]] });
+    const agent = stateOf({ waiting: [{ ...waitingOn("ag1", "p1"), until: "soon" }] });
+    expect([waitingForMe(friend, NOW), waitingForMe(agent, NOW)]).toEqual([1, 1]);
   });
 });
 
@@ -164,6 +168,22 @@ describe("the number on 通讯录", () => {
     expect(transport.log.filter((x) => x === "social").length).toBe(fetches);
     await goContacts();
     expect(screen.getByText("小陈", { selector: ".row-name" }).closest("button").querySelector(".row-preview").textContent).toBe("申请添加你为好友 · 已过期");
+  });
+
+  it("the number and the list opened 30 s later agree about 已过期 at every instant (one clock for both)", async () => {
+    await openApp({ sync: baseSync, social: socialWith({ incoming: [request("r1", PEOPLE[CY], { expiresAt: at(70_000) })] }) });
+    await elapse(30_000);
+    await goContacts();
+    const preview = () => screen.getByText("小陈", { selector: ".row-name" }).closest("button").querySelector(".row-preview").textContent;
+    const seen = [];
+    for (let step = 0; step < 10; step += 1) {
+      const expired = preview().endsWith("已过期");
+      expect(badgeOf(contactsEntry()) === null, `at ${30 + step * 10} s`).toBe(expired);
+      seen.push(expired);
+      await elapse(10_000);
+    }
+    // (It did run out on the way: the two changed together, at the clock's minute after the deadline.)
+    expect(seen).toEqual([false, false, false, false, false, false, false, false, false, true]);
   });
 
   it("counts the requests waiting on my Agents with the friend requests while the switch is on, from the first sync", async () => {

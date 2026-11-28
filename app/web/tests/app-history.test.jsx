@@ -610,8 +610,8 @@ describe("N1 on the real rail: the same sections, wide and then narrowed", () =>
     await press(tab(/^通讯录/));
     expect(here()).toBe("/contacts");
   };
-  const LAST = [[/消息$/, `/chat/${D1}`], [/^Agent/, `/agents/${AG1}`], [/^设置/, "/settings/providers"]];
-  const LISTS = [[/消息$/, "/"], [/^Agent/, "/agents"], [/^设置/, "/settings"], [/^通讯录/, "/contacts"]];
+  const LAST = [[/^消息/, `/chat/${D1}`], [/^Agent/, `/agents/${AG1}`], [/^设置/, "/settings/providers"]];
+  const LISTS = [[/^消息/, "/"], [/^Agent/, "/agents"], [/^设置/, "/settings"], [/^通讯录/, "/contacts"]];
 
   it("wide: each tab answers the page its section was left on (the control: these are the pages a narrow layout must not open)", async () => {
     await leaveEachSectionOnAPage();

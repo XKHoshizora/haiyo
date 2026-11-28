@@ -3,6 +3,7 @@
 // fetch keeps (data/sync.js); every action asks for that fetch again, so a row's end shows without a reload.
 import React, { useState } from "react";
 import { useStore } from "../data/store.jsx";
+import { isPast } from "../data/deadline.js";
 import { socialErrorText } from "../data/errorTexts.js";
 import { untilText } from "./untilText.js";
 import { nameOf, convTitle } from "../state/selectors.js";
@@ -90,14 +91,17 @@ export function AgentContactRows({ query }) {
               </span>
             </span>
           </span>
-          <span className="social-row-actions">
-            <Btn small variant="primary" disabled={busy !== null} onClick={() => go(`approve:${w.agentId}:${w.subject.id}`, () => actions.approveAgentContact(w.agentId, w.subject.id), "已同意")}>
-              {busy === `approve:${w.agentId}:${w.subject.id}` ? "处理中…" : "同意"}
-            </Btn>
-            <Btn small disabled={busy !== null} onClick={() => go(`decline:${w.agentId}:${w.subject.id}`, () => actions.declineAgentContact(w.agentId, w.subject.id), "已拒绝")}>
-              {busy === `decline:${w.agentId}:${w.subject.id}` ? "处理中…" : "拒绝"}
-            </Btn>
-          </span>
+          {/* (One past its deadline is still held until the next fetch drops it: it reads 已过期 and has nothing to answer.) */}
+          {!isPast(w.until, now) && (
+            <span className="social-row-actions">
+              <Btn small variant="primary" disabled={busy !== null} onClick={() => go(`approve:${w.agentId}:${w.subject.id}`, () => actions.approveAgentContact(w.agentId, w.subject.id), "已同意")}>
+                {busy === `approve:${w.agentId}:${w.subject.id}` ? "处理中…" : "同意"}
+              </Btn>
+              <Btn small disabled={busy !== null} onClick={() => go(`decline:${w.agentId}:${w.subject.id}`, () => actions.declineAgentContact(w.agentId, w.subject.id), "已拒绝")}>
+                {busy === `decline:${w.agentId}:${w.subject.id}` ? "处理中…" : "拒绝"}
+              </Btn>
+            </span>
+          )}
         </li>
       ))}
       {leaving && <LeaveAgentModal agentId={leaving} onClose={() => setLeaving(null)} />}

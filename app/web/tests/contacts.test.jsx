@@ -312,6 +312,41 @@ describe("requests", () => {
   });
 });
 
+describe("a request past its deadline (held until the next fetch drops it)", () => {
+  const in90s = () => new Date(NOW + 90_000).toISOString();
+  const relLine = () => document.querySelector(".main-col .rel-rows .member-body .muted").textContent;
+  const relTag = () => document.querySelector(".main-col .rel-rows .tag").textContent;
+  const rowTag = (name) => screen.getByText(name, { selector: ".list-col .row-name" }).closest("button").querySelector(".tag").textContent;
+
+  it("an incoming one: the card stops offering 同意 and 拒绝 at the minute it runs out and reads 已过期, and so does its row", async () => {
+    await openApp({ sync: baseSync, social: socialWith({ incoming: [request("r1", PEOPLE[CY], { expiresAt: in90s() })] }) });
+    await goContacts();
+    await openRow("小陈");
+    expect(inMain().getByRole("button", { name: "同意" })).toBeTruthy();
+    expect(relTag()).toBe("待你确认");
+    expect(rowTag("小陈")).toBe("待你确认");
+    await elapse(2 * 60_000);
+    expect(inMain().queryByRole("button", { name: "同意" })).toBeNull();
+    expect(inMain().queryByRole("button", { name: "拒绝" })).toBeNull();
+    expect(relLine()).toMatch(/^对方发起 · .+ · 已过期$/);
+    expect(relTag()).toBe("已过期");
+    expect(rowTag("小陈")).toBe("已过期");
+    expect(screen.getByText("小陈", { selector: ".row-name" }).closest("button").querySelector(".row-preview").textContent).toBe("申请添加你为好友 · 已过期");
+  });
+
+  it("an outgoing one: no 撤回 once it has run out (the service would answer that it expired), and it reads 已过期", async () => {
+    await openApp({ sync: baseSync, social: socialWith({ outgoing: [request("r2", PEOPLE[DORA], { expiresAt: in90s() })] }) });
+    await goContacts();
+    await openRow("朵拉");
+    expect(inMain().getByRole("button", { name: "撤回" })).toBeTruthy();
+    await elapse(2 * 60_000);
+    expect(inMain().queryByRole("button", { name: "撤回" })).toBeNull();
+    expect(relLine()).toMatch(/^你发起 · .+ · 已过期$/);
+    expect(relTag()).toBe("已过期");
+    expect(rowTag("朵拉")).toBe("已过期");
+  });
+});
+
 describe("friends: message and unfriend", () => {
   it("发消息 opens the direct chat", async () => {
     await openApp({ sync: baseSync, social: socialWith() });
