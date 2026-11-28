@@ -18,6 +18,12 @@ export const REQUEST_PUSH_BODY = "你有新的申请";
  * wait, a later one replacing the earlier. A constant: it names no person and no request.
  */
 export const REQUESTS_COLLAPSE_ID = "requests";
+/**
+ * The quiet window of a phone for pushes about requests: once APNs took one for that phone (`sent`), no other goes to it for
+ * this long, whoever asks and whatever is asked (counted `coalesced`: the notification would be the same one, and the requests
+ * are listed in the app all the same). Without it a stranger could ring a phone again and again: send, withdraw, send.
+ */
+export const REQUEST_QUIET_MS = 10 * 60_000;
 
 /**
  * How long a socket of the phone's own session has to answer a ping before the phone is pushed anyway (`Hub.probe`): a page
@@ -92,7 +98,10 @@ export interface PushStats {
   removed: number;
   /** Phones not pushed to because a socket of their own session answered (`PRESENCE_PROBE_MS`). */
   present: number;
-  /** Pushes not made because that phone's push for the same conversation (or about requests) was still out (asked, queued, sent or retried). */
+  /**
+   * Pushes not made because that phone's push for the same conversation (or about requests) was still out (asked, queued, sent
+   * or retried), or, about requests, because that phone is in its quiet window (`REQUEST_QUIET_MS`).
+   */
   coalesced: number;
   /** Pushes not made because, after a probe without an answer, they were no longer wanted (`PushKind.stillWanted`). */
   stale: number;
@@ -105,10 +114,15 @@ export interface Notifier {
   idle(): Promise<void>;
   /** The counters since the last flush, zeroed; written to the log as one line when anything was counted. */
   flush(): PushStats;
-  /** Deletes the phones of expired sessions now (what the timer does); how many. */
+  /**
+   * What the timer does besides the counters: deletes the phones of expired sessions now, and forgets the quiet windows that are
+   * over (`REQUEST_QUIET_MS`); how many phones were deleted.
+   */
   sweepExpired(): Promise<number>;
   /** Whether the timer runs (not under the test harness: `everyMs` 0). */
   readonly ticking: boolean;
+  /** How many quiet windows are held: those of phones in one now, and those over but not yet forgotten (`sweepExpired`). */
+  readonly quietWindows: number;
   /**
    * Called once the transaction that made `request` has committed, and only when that call made it (not one that was waiting
    * already): it now waits for its person's answer, whose phones are pushed `REQUEST_PUSH_BODY` as a message's are (present,
@@ -142,6 +156,8 @@ export interface NotifierDeps {
    * variable sets it.
    */
   everyMs?: number;
+  /** The clock of the quiet windows (`REQUEST_QUIET_MS`), default `Date.now`. Tests only: the harness's clock moves it. */
+  now?: () => number;
 }
 
 /** A phone to push, as it was read when its push was decided. */
@@ -168,7 +184,8 @@ const phoneParams = (p: Phone): string[] => [p.id, p.sessionId, p.principalId, p
  * sent or retried) adds none — it is folded into the one out (`absorb`) and counted `coalesced` —, since it would carry the
  * same content and collapse id. `stillWanted`: whether a push decided before a probe is still wanted after it (the probe can
  * take `PRESENCE_PROBE_MS`), for everything folded into it meanwhile too; one indexed query, asked only when a probe ran and
- * had no answer.
+ * had no answer. `quietMs`: once APNs took one (`sent`), none more of the same key goes to that phone for this long (counted
+ * `coalesced` too); a kind without it has no window.
  */
 interface PushKind<T extends Phone> {
   key(t: T): string;
@@ -176,6 +193,7 @@ interface PushKind<T extends Phone> {
   payload(t: T): string;
   absorb(out: T, later: T): void;
   stillWanted(db: Db, t: T): Promise<boolean>;
+  quietMs?: number;
 }
 
 /** A message's push: a phone, and the conversation it is about (up to `newestSeq`, the newest message there it stands for). */
@@ -286,10 +304,12 @@ async function requestTargets(db: Db, request: WaitingRequest): Promise<RequestT
 
 /**
  * A request's push, one per phone for every request: its collapse id the constant `REQUESTS_COLLAPSE_ID`, so that several
- * requests show as one notification. Still wanted after a probe while the phone is unchanged (`unchangedPhone`) and any request
- * it stands for still waits for its person (`waitingSql`: not withdrawn, accepted, declined, expired or blocked meanwhile).
+ * requests show as one notification, and after one is sent none more for that phone within `REQUEST_QUIET_MS`. Still wanted
+ * after a probe while the phone is unchanged (`unchangedPhone`) and any request it stands for still waits for its person
+ * (`waitingSql`: not withdrawn, accepted, declined, expired or blocked meanwhile).
  */
 const REQUEST_PUSH: PushKind<RequestTarget> = {
+  quietMs: REQUEST_QUIET_MS,
   key: () => REQUESTS_COLLAPSE_ID,
   collapseId: () => REQUESTS_COLLAPSE_ID,
   payload: () => requestPushPayload(),
@@ -313,15 +333,35 @@ const REQUEST_PUSH: PushKind<RequestTarget> = {
  * the probe instead of never). One push per phone and conversation at a time: a message while that phone's push for the
  * conversation is still out (asked, queued, sent or retried) adds none (`coalesced`; the same content and collapse id).
  * A request that newly waits for a person's answer (`requestWaiting`, called by its route after the commit) is pushed to that
- * person's phones the same way (`requestTargets`, `REQUEST_PUSH`), one push per phone for all requests at a time.
+ * person's phones the same way (`requestTargets`, `REQUEST_PUSH`), one push per phone for all requests at a time, and none
+ * more to a phone within `REQUEST_QUIET_MS` of one that was sent to it.
  * A dead token (410, `BadDeviceToken`) deletes the device; a configuration refusal pauses pushes in the sender and is said
  * once per class. Never logs a token, a conversation's id, a request's, a person or any text: counters only (`flush`), every
  * `SUMMARY_EVERY_MS` and at the stop.
  */
 export function createNotifier(deps: NotifierDeps): Notifier {
   const { db, apns, presence, log } = deps;
-  const under = new Set<Promise<void>>();
+  const now = deps.now ?? Date.now;
+  const under = new Set<Promise<unknown>>();
   const said = new Set<string>();
+  /**
+   * The quiet windows (`PushKind.quietMs`: the requests'), by `<device id>:<key>`: until when no push of that key goes to that
+   * phone. Set only when APNs took one (`sent`): a phone that was present, a push no longer wanted, one that failed or went to a
+   * dead token told the person nothing. In memory (a restart forgets them); one that is over is forgotten when it is next read
+   * and by the timer (`sweepExpired`), so the map holds at most the phones sent such a push in the last window.
+   */
+  const quietUntil = new Map<string, number>();
+  const inQuiet = (key: string): boolean => {
+    const until = quietUntil.get(key);
+    if (until === undefined) return false;
+    if (now() < until) return true;
+    quietUntil.delete(key);
+    return false;
+  };
+  const forgetQuiet = (): void => {
+    const at = now();
+    for (const [key, until] of quietUntil) if (until <= at) quietUntil.delete(key);
+  };
   let stats: PushStats = { sent: 0, removed: 0, present: 0, coalesced: 0, stale: 0, failed: {} };
   let closed = false;
   let closing: Promise<void> | null = null;
@@ -348,18 +388,21 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     }
   };
 
-  /** One push of `kind` to its phone: skipped as present, dropped as no longer wanted after a probe, or sent and its outcome counted. */
-  async function pushOne<T extends Phone>(client: ApnsClient, kind: PushKind<T>, t: T): Promise<void> {
+  /**
+   * One push of `kind` to its phone: skipped as present, dropped as no longer wanted after a probe, or sent and its outcome
+   * counted. Whether APNs took it (`sent`).
+   */
+  async function pushOne<T extends Phone>(client: ApnsClient, kind: PushKind<T>, t: T): Promise<boolean> {
     // Present only when a socket of its own session is open and answers; else (none, closing, silent, closed meanwhile) pushed.
     if (presence.hasSocketFor(t.sessionId)) {
       if (await presence.probe(t.sessionId, PRESENCE_PROBE_MS)) {
         stats.present++;
-        return;
+        return false;
       }
       // The probe took up to `PRESENCE_PROBE_MS`: what was read before it is asked once more, with what was folded into it since.
       if (!(await kind.stillWanted(db, t))) {
         stats.stale++;
-        return;
+        return false;
       }
     }
     const result = await client.send({ token: t.token, env: t.env, collapseId: kind.collapseId(t), payload: kind.payload(t) });
@@ -367,13 +410,16 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     else if (result.outcome === "gone") {
       if (await removeDeadDevice(db, t)) stats.removed++;
     } else count(result.why, t.env);
+    return result.outcome === "sent";
   }
 
   /**
    * The pushes of one kind: of the phones `read` gives, each pushed (`pushOne`) unless that phone's push of the same key is out
-   * already — then folded into it (`PushKind.absorb`) and counted `coalesced`. The pushes out, by `<device id>:<key>`, are the
-   * targets as they now stand: what is folded into one is what the re-check after its probe asks about (the newest message, not
-   * the first; every request, not the first). A key is held until its push is over.
+   * already — then folded into it (`PushKind.absorb`) and counted `coalesced` — or, for a kind with a quiet window, that phone is
+   * in it (`coalesced` too; asked before any probe is spent). The pushes out, by `<device id>:<key>`, are the targets as they now
+   * stand: what is folded into one is what the re-check after its probe asks about (the newest message, not the first; every
+   * request, not the first). A key is held until its push is over, and a window, when that push was sent, is set before the key
+   * is let go — in the same step, so that a push racing it finds the one or the other, never neither.
    */
   function pushesOf<T extends Phone>(kind: PushKind<T>): (client: ApnsClient, read: () => Promise<T[]>) => Promise<void> {
     const out = new Map<string, T>();
@@ -385,9 +431,13 @@ export function createNotifier(deps: NotifierDeps): Notifier {
         stats.coalesced++;
         return;
       }
+      if (kind.quietMs !== undefined && inQuiet(key)) {
+        stats.coalesced++;
+        return;
+      }
       out.set(key, t);
       try {
-        await pushOne(client, kind, t);
+        if ((await pushOne(client, kind, t)) && kind.quietMs !== undefined) quietUntil.set(key, now() + kind.quietMs);
       } finally {
         out.delete(key);
       }
@@ -413,10 +463,14 @@ export function createNotifier(deps: NotifierDeps): Notifier {
 
   const pushMessages = pushesOf(MESSAGE_PUSH);
   const pushRequests = pushesOf(REQUEST_PUSH);
-  /** Runs a push job on its own (`idle` and the stop wait for it); a job never rejects (`pushesOf` catches every failure). */
-  const start = (job: Promise<void>): void => {
-    const tracked: Promise<void> = job.finally(() => under.delete(tracked));
+  /**
+   * Runs a job on its own (`idle` and the stop wait for it), and gives it back. A job never rejects: `pushesOf` and the sweep
+   * catch every failure.
+   */
+  const start = <R>(job: Promise<R>): Promise<R> => {
+    const tracked: Promise<R> = job.finally(() => under.delete(tracked));
     under.add(tracked);
+    return tracked;
   };
 
   const off = deps.conversations.onMessages((messages) => {
@@ -435,21 +489,25 @@ export function createNotifier(deps: NotifierDeps): Notifier {
   }
 
   /**
-   * The phones of expired sessions deleted (push/devices.ts `removeExpiredDevices`), counted; on this timer, which always
-   * runs — with or without APNs (phones are registered either way), whatever `MEMORY.changesSweepMs` says.
+   * The phones of expired sessions deleted (push/devices.ts `removeExpiredDevices`), counted, and the quiet windows that are
+   * over forgotten; on this timer, which always runs — with or without APNs (phones are registered either way), whatever
+   * `MEMORY.changesSweepMs` says.
    */
   function sweepExpired(): Promise<number> {
     if (closed) return Promise.resolve(0);
-    let removed = 0;
-    const job: Promise<void> = removeExpiredDevices(db)
-      .then((n) => {
-        removed = n;
-        if (n > 0) log.info({ metric: "push_devices_expired", removed: n }, "phones of expired sessions were removed");
-      })
-      .catch((err: unknown) => log.warn({ code: (err as { code?: string }).code }, "push device sweep failed; trying again next interval"))
-      .finally(() => under.delete(job));
-    under.add(job);
-    return job.then(() => removed);
+    forgetQuiet();
+    return start(
+      removeExpiredDevices(db).then(
+        (n) => {
+          if (n > 0) log.info({ metric: "push_devices_expired", removed: n }, "phones of expired sessions were removed");
+          return n;
+        },
+        (err: unknown) => {
+          log.warn({ code: (err as { code?: string }).code }, "push device sweep failed; trying again next interval");
+          return 0;
+        },
+      ),
+    );
   }
 
   const everyMs = deps.everyMs ?? SUMMARY_EVERY_MS;
@@ -482,6 +540,7 @@ export function createNotifier(deps: NotifierDeps): Notifier {
       }),
     ]);
     clearTimeout(waited);
+    quietUntil.clear();
     flush();
   }
 
@@ -493,6 +552,9 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     sweepExpired,
     get ticking() {
       return timer !== null && !closed;
+    },
+    get quietWindows() {
+      return quietUntil.size;
     },
     requestWaiting(request) {
       if (apns === null || closed) return;

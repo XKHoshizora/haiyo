@@ -3953,6 +3953,11 @@ and a request it stands for still waiting, else `stale`), one push per phone for
 same counters. It carries `{"aps": {"alert": {"title": "Haiyo", "body": "你有新的申请"}, "sound": "default", "thread-id":
 "requests"}}` with `apns-collapse-id: requests` (one notification for every request waiting): nothing of who asks, of whom
 or which Agent, and no `c` — the shell reads only `c` of a tapped notification, so a tap opens the app as it was.
+**The quiet window:** once APNs took a request push for a phone (`sent`; not when it was present, no longer wanted, failed
+or its token dead), no other request push goes to that phone for `REQUEST_QUIET_MS` (10 minutes), whoever asks and
+whatever is asked — counted `coalesced`; the requests are listed in the app all the same. Without it a stranger could ring
+a phone again and again (send, withdraw, send). Per phone, in memory (a restart forgets the windows; the 10-minute timer
+forgets those that are over); message pushes have none.
 
 **The sender** (`src/push/apns.ts`). `node:http2` to `api.push.apple.com` (a `sandbox` token to
 `api.sandbox.push.apple.com`), one connection per host, kept while it lasts (closed after an hour idle, opened again on
@@ -3998,11 +4003,12 @@ shown again, so an abandoned phone's token would otherwise stay — counted as `
 from their last use, so a phone whose app was not opened for a week gets no more pushes.
 
 **Counters in the log.** Never a token, a conversation's or a request's id, a person or any text. `{"metric": "push",
-"sent", "removed", "present", "coalesced", "stale", "failed": {"<class>": n}}` every 10 minutes when anything was counted, and at the stop:
-pushes APNs took, devices deleted for a dead token, phones skipped as present, pushes not made because one was out, pushes
-no longer wanted after a probe, and pushes given up by class (`throttled`, `server`, `network`, `timeout`, `auth`,
-`key_env`, `topic`, `token_rate`, `rejected`, `overloaded`, `closed`, `paused`). `{"metric": "push_off", "missing": [...],
-"malformed": [...], "links": "on" | "off"}` (WARN, variable names only) once at start when some of the four variables are
+"sent", "removed", "present", "coalesced", "stale", "failed": {"<class>": n}}` every 10 minutes when anything was
+counted, and at the stop: pushes APNs took, devices deleted for a dead token, phones skipped as present, pushes not made
+because one was out (or, for requests, the phone's quiet window), pushes no longer wanted after a probe, and pushes given
+up by class (`throttled`, `server`, `network`, `timeout`, `auth`, `key_env`, `topic`, `token_rate`, `rejected`,
+`overloaded`, `closed`, `paused`). `{"metric": "push_off", "missing": [...], "malformed": [...], "links": "on" |
+"off"}` (WARN, variable names only) once at start when some of the four variables are
 set but not all, or one is malformed; `links: "off"` (and the message) when the universal-links file is off too (no valid
 Team and bundle id). `{"metric": "push_config_refused", "class": "auth" | "key_env" | "topic" | "token_rate", "host":
 "sandbox" | "production"}` (WARN) once per class, host and process, the first time that host refuses the configuration,

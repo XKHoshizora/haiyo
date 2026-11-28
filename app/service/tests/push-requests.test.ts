@@ -1,8 +1,8 @@
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { createApnsClient, type ApnsClient } from "../src/push/apns.ts";
-import { PRESENCE_PROBE_MS, REQUEST_PUSH_BODY, REQUESTS_COLLAPSE_ID } from "../src/push/notify.ts";
-import { api, befriend, signUp, type Actor } from "./helpers/actors.ts";
+import { PRESENCE_PROBE_MS, REQUEST_PUSH_BODY, REQUEST_QUIET_MS, REQUESTS_COLLAPSE_ID } from "../src/push/notify.ts";
+import { api, befriend, cookieHeaderFrom, signIn, signUp, type Actor } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
 import { fakeApns, type FakeApns } from "./helpers/apns.ts";
 import { useApp } from "./helpers/harness.ts";
@@ -14,7 +14,9 @@ import { closeAllSockets, connect, issueTicket, rawUpgrade, type RawSocket } fro
  * notifications"): a friend request sent to them, an add of one of their Agents that waits for their decision. Nothing else of a
  * request is pushed — not an accept, a reject, a withdrawal, a decline or an expiry, not an add let in at once, not asking again
  * while it waits. The same discipline as a message's push: content-free, the recipient's lasting phones only, not while their own
- * session is present, re-checked after a probe without an answer, one at a time per phone, counters only in the log.
+ * session is present, re-checked after a probe without an answer, one at a time per phone, counters only in the log. And one
+ * more rule of their own: after one was sent to a phone, none more goes to it for `REQUEST_QUIET_MS` (its quiet window), so that
+ * nobody can ring a phone again and again (send, withdraw, send). The windows run on the harness's clock (`clock.advance`).
  */
 
 const fake: { apns?: FakeApns } = {};
@@ -22,7 +24,9 @@ let real: ApnsClient | null = null;
 // The app is built before the fake listens: the client it is given forwards to one made for the fake's address.
 const apns: ApnsClient = { send: (n) => real!.send(n), close: async (grace) => real?.close(grace) };
 const lines: string[] = [];
-const { app, db } = useApp({ env: SITE_ENV, config: SOCIAL_ON, agentWorker: false, apns, logStream: { write: (l) => void lines.push(l) } });
+const { app, db, clock } = useApp({ env: SITE_ENV, config: SOCIAL_ON, agentWorker: false, apns, logStream: { write: (l) => void lines.push(l) } });
+/** Every quiet window there is now is over (the clock moves past it). */
+const windowOver = () => clock.advance(REQUEST_QUIET_MS);
 
 const PEM = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 const client = (): ApnsClient =>
@@ -55,7 +59,11 @@ const phone = async (who: Actor): Promise<string> => {
   expect((await api(app, who, "POST", "/api/push/devices", { token, env: "production" })).status).toBe(200);
   return token;
 };
+/** `who` signs in once more: another session (another phone). */
+const anotherSession = async (who: Actor): Promise<Actor> => ({ ...who, cookie: cookieHeaderFrom((await signIn(app, who.email, who.password)).headers["set-cookie"]) });
+const sessionOf = async (token: string): Promise<string> => (await db.query<{ session_id: string }>("select session_id from push_devices where token = $1", [token])).rows[0]!.session_id;
 const ask = (from: Actor, to: Actor) => api<{ id: string }>(app, from, "POST", "/api/friend-requests", { handle: to.handle });
+const withdraw = (from: Actor, id: string) => api(app, from, "POST", `/api/friend-requests/${id}/withdraw`);
 const add = (who: Actor, agentId: string) => api(app, who, "POST", "/api/agent-contacts", { agentId });
 const agentOf = async (owner: Actor, handle: string): Promise<string> => ((await mustCreateAgent(app, owner, { handle })) as { id: string }).id;
 /** What every push about a request carries, whoever it is for and whatever was asked. */
@@ -165,8 +173,9 @@ describe("what is pushed, to whom, and what it carries", () => {
     const tOwner = await phone(owner);
     await app.push.idle();
     fake.apns!.reset();
-    /** What the step pushed (each step waits for its pushes: none is folded into another's). */
+    /** What the step pushed (each step starts after the last one's quiet window and waits for its pushes: none is folded into another's). */
     const step = async (fn: () => Promise<void>): Promise<string[]> => {
+      windowOver();
       const before = requests().length;
       await fn();
       await app.push.idle();
@@ -203,7 +212,7 @@ describe("what is pushed, to whom, and what it carries", () => {
     expect(pushedTo()).not.toContain(ta);
   });
 
-  test("the push reads the request itself: one that is blocked either way, past its deadline or no longer pending is pushed to nobody", async () => {
+  test("the push reads the request itself: one that is blocked either way, past its deadline, no longer pending, or of a deleted Agent is pushed to nobody", async () => {
     const a = await signUp(app, "rqread_a");
     const b = await signUp(app, "rqread_b");
     const owner = await signUp(app, "rqread_owner");
@@ -236,6 +245,15 @@ describe("what is pushed, to whom, and what it carries", () => {
       await app.push.idle();
       await unblock();
     }
+    // An add past its `until` (not yet rewritten `expired`), and an add of an Agent deleted since.
+    await db.query("update agent_contacts set until = now() - interval '1 minute' where agent_id = $1 and subject_id = $2", [agentId, a.id]);
+    app.push.requestWaiting({ agentId, subjectId: a.id });
+    await app.push.idle();
+    await db.query("update agent_contacts set until = now() + interval '7 days' where agent_id = $1 and subject_id = $2", [agentId, a.id]);
+    await db.query("update agents set deleted_at = now() where principal_id = $1", [agentId]);
+    app.push.requestWaiting({ agentId, subjectId: a.id });
+    await app.push.idle();
+    await db.query("update agents set deleted_at = null where principal_id = $1", [agentId]);
     expect(requests()).toEqual([]);
     // Control: the same calls without a block, for requests that wait, push.
     await db.query("update friend_requests set status = 'expired', resolved_at = now() where id = $1", [lapsed]);
@@ -247,9 +265,9 @@ describe("what is pushed, to whom, and what it carries", () => {
 });
 
 describe("one at a time, and not while the app is in front", () => {
-  test("a second request while the first's push is out: folded into it, one push; once it is over the next request pushes again", async () => {
+  test("a second request while the first's push is out: folded into it, one push; once it was sent, the quiet window; after the window the next request pushes again", async () => {
     const b = await signUp(app, "rqout_b");
-    const [a, c, d] = [await signUp(app, "rqout_a"), await signUp(app, "rqout_c"), await signUp(app, "rqout_d")];
+    const [a, c, d, e] = [await signUp(app, "rqout_a"), await signUp(app, "rqout_c"), await signUp(app, "rqout_d"), await signUp(app, "rqout_e")];
     const tb = await phone(b);
     let release!: (x: { status: number }) => void;
     fake.apns!.answer({ hold: new Promise((r) => (release = r)) });
@@ -258,10 +276,13 @@ describe("one at a time, and not while the app is in front", () => {
     expect((await ask(c, b)).status).toBe(201);
     await new Promise((r) => setTimeout(r, 50));
     release({ status: 200 });
+    // The moment its push is over the window holds: the next one finds the one or the other, never neither.
+    expect((await ask(d, b)).status).toBe(201);
     await app.push.idle();
     expect(pushedTo()).toEqual([tb]);
-    expect(app.push.flush()).toMatchObject({ sent: 1, coalesced: 1 });
-    expect((await ask(d, b)).status).toBe(201);
+    expect(app.push.flush()).toMatchObject({ sent: 1, coalesced: 2 });
+    windowOver();
+    expect((await ask(e, b)).status).toBe(201);
     await app.push.idle();
     expect(pushedTo()).toEqual([tb, tb]);
   });
@@ -342,6 +363,46 @@ describe("one at a time, and not while the app is in front", () => {
     expect(app.push.flush()).toMatchObject({ sent: 0, stale: 1 });
   });
 
+  test("asked and silent, a second request folded into the push: the first withdrawn meanwhile, the push still goes for the second; both withdrawn, stale", async () => {
+    for (const gone of ["first", "both"] as const) {
+      requests().length = 0;
+      app.push.flush();
+      const [a, b, c] = [await signUp(app, `rqfold_a_${gone}`), await signUp(app, `rqfold_b_${gone}`), await signUp(app, `rqfold_c_${gone}`)];
+      const tb = await phone(b);
+      const raw = await silentSocket(b);
+      const first = await ask(a, b);
+      expect(first.status).toBe(201);
+      await untilPinged(raw);
+      const second = await ask(c, b);
+      expect(second.status).toBe(201);
+      expect((await withdraw(a, first.json.id)).status).toBe(200);
+      if (gone === "both") expect((await withdraw(c, second.json.id)).status).toBe(200);
+      await app.push.idle();
+      expect([gone, pushedTo()]).toEqual([gone, gone === "first" ? [tb] : []]);
+      expect([gone, app.push.flush()]).toMatchObject([gone, gone === "first" ? { sent: 1, coalesced: 1, stale: 0 } : { sent: 0, coalesced: 1, stale: 1 }]);
+    }
+  }, 30_000);
+
+  test("asked and silent, a friend request and an add of one of the person's Agents in one push: the friend request withdrawn, the push goes for the add", async () => {
+    const b = await signUp(app, "rqmixfold_b");
+    const agentId = await agentOf(b, "rqmixfoldbot");
+    const a = await signUp(app, "rqmixfold_a");
+    const v = await signUp(app, "rqmixfold_v");
+    const tb = await phone(b);
+    const raw = await silentSocket(b);
+    await app.push.idle();
+    fake.apns!.reset();
+    app.push.flush();
+    const sent = await ask(a, b);
+    expect(sent.status).toBe(201);
+    await untilPinged(raw);
+    expect((await add(v, agentId)).status).toBe(202);
+    expect((await withdraw(a, sent.json.id)).status).toBe(200);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([tb]);
+    expect(app.push.flush()).toMatchObject({ sent: 1, coalesced: 1, stale: 0 });
+  });
+
   test("a phone whose session expired gets nothing", async () => {
     const a = await signUp(app, "rqexp_a");
     const b = await signUp(app, "rqexp_b");
@@ -350,6 +411,115 @@ describe("one at a time, and not while the app is in front", () => {
     expect((await ask(a, b)).status).toBe(201);
     await app.push.idle();
     expect(requests()).toEqual([]);
+  });
+});
+
+describe("the quiet window: after one was sent to a phone, no other for REQUEST_QUIET_MS", () => {
+  test("send, withdraw, send again: one push, the second counted coalesced; an add of the person's Agent within the window: none either; after the window, pushed again", async () => {
+    const a = await signUp(app, "rqq_a");
+    const b = await signUp(app, "rqq_b");
+    const agentId = await agentOf(b, "rqqbot");
+    const v = await signUp(app, "rqq_v");
+    const c = await signUp(app, "rqq_c");
+    const tb = await phone(b);
+    await app.push.idle();
+    fake.apns!.reset();
+    app.push.flush();
+    const first = await ask(a, b);
+    expect(first.status).toBe(201);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([tb]);
+    expect((await withdraw(a, first.json.id)).status).toBe(200);
+    expect((await ask(a, b)).status).toBe(201);
+    await app.push.idle();
+    expect((await add(v, agentId)).status).toBe(202);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([tb]);
+    expect(app.push.flush()).toMatchObject({ sent: 1, coalesced: 2 });
+    expect(REQUEST_QUIET_MS).toBe(10 * 60_000);
+    // A minute short of the window: still quiet. At its end: pushed again.
+    clock.advance(REQUEST_QUIET_MS - 60_000);
+    const late = await ask(c, b);
+    expect(late.status).toBe(201);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([tb]);
+    clock.advance(60_000);
+    expect((await withdraw(c, late.json.id)).status).toBe(200);
+    expect((await ask(c, b)).status).toBe(201);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([tb, tb]);
+  });
+
+  test("a push that told the person nothing starts no window: present, or refused by APNs — the next request is pushed", async () => {
+    const [a, b, c, d] = [await signUp(app, "rqqn_a"), await signUp(app, "rqqn_b"), await signUp(app, "rqqn_c"), await signUp(app, "rqqn_d")];
+    const tb = await phone(b);
+    const td = await phone(d);
+    // b's app in front: present, no window; then in the background: pushed.
+    const s = await connect(app, b);
+    expect((await ask(a, b)).status).toBe(201);
+    await app.push.idle();
+    expect(app.push.flush()).toMatchObject({ sent: 0, present: 1 });
+    s.close();
+    await s.closed;
+    const session = await sessionOf(tb);
+    for (let i = 0; i < 200 && app.realtime.hasSocketFor(session); i++) await new Promise((r) => setTimeout(r, 5));
+    expect((await ask(c, b)).status).toBe(201);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([tb]);
+    // d's push refused by APNs: no window; the next is sent.
+    fake.apns!.answer({ status: 400, reason: "BadCollapseId" });
+    expect((await ask(a, d)).status).toBe(201);
+    await app.push.idle();
+    expect((await ask(c, d)).status).toBe(201);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([tb, td, td]);
+    expect(app.push.flush()).toMatchObject({ sent: 2, coalesced: 0, failed: { rejected: 1 } });
+  });
+
+  test("the window is the phone's: the person's other phone and another person's phone are pushed, and a message's push inside the window goes as ever", async () => {
+    const [a, b, c, d, e] = [await signUp(app, "rqqp_a"), await signUp(app, "rqqp_b"), await signUp(app, "rqqp_c"), await signUp(app, "rqqp_d"), await signUp(app, "rqqp_e")];
+    const { conversationId } = await befriend(app, a, b);
+    await app.push.idle();
+    const p1 = await phone(b);
+    fake.apns!.reset();
+    expect((await ask(c, b)).status).toBe(201);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([p1]);
+    // b's second phone, registered within p1's window: pushed for the next request; p1 is not.
+    const p2 = await phone(await anotherSession(b));
+    expect((await ask(e, b)).status).toBe(201);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([p1, p2]);
+    const td = await phone(d);
+    expect((await ask(c, d)).status).toBe(201);
+    await app.push.idle();
+    expect(pushedTo()).toEqual([p1, p2, td]);
+    expect((await api(app, a, "POST", `/api/conversations/${conversationId}/messages`, { text: "hi", clientTxn: "rqqp1" })).status).toBe(201);
+    await app.push.idle();
+    expect(
+      requests()
+        .slice(3)
+        .map((r) => [r.path.replace("/3/device/", ""), r.headers["apns-collapse-id"]])
+        .sort(),
+    ).toEqual([[p1, conversationId], [p2, conversationId]].sort());
+    expect(app.push.flush()).toMatchObject({ sent: 5, coalesced: 1 });
+  });
+
+  test("the windows are forgotten once over: none is held after the window and the sweep", async () => {
+    windowOver();
+    await app.push.sweepExpired();
+    expect(app.push.quietWindows).toBe(0);
+    const a = await signUp(app, "rqqf_a");
+    const b = await signUp(app, "rqqf_b");
+    await phone(b);
+    expect((await ask(a, b)).status).toBe(201);
+    await app.push.idle();
+    expect(app.push.quietWindows).toBe(1);
+    await app.push.sweepExpired();
+    expect(app.push.quietWindows).toBe(1);
+    windowOver();
+    await app.push.sweepExpired();
+    expect(app.push.quietWindows).toBe(0);
   });
 });
 
@@ -372,6 +542,8 @@ describe("the request never waits on the push", () => {
     release({ status: 200 });
     await app.push.idle();
     expect(app.push.flush()).toMatchObject({ sent: 1 });
+    // (b's phone was sent one: past its quiet window, so that the next is tried.)
+    windowOver();
     const shared = real;
     real = { send: () => Promise.reject(Object.assign(new Error("CANARY-APNS-DOWN"), { code: "ECONNRESET" })), close: async () => {} };
     try {

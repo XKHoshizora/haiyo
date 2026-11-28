@@ -221,6 +221,8 @@ export interface BuildOptions {
    * same reason as `heartbeat`.
    */
   pushTimer?: false;
+  /** The clock of the push's quiet windows (src/push/notify.ts `REQUEST_QUIET_MS`), default `Date.now`. Tests: the harness's clock. */
+  pushNow?: () => number;
   /**
    * The Agent social worker's own timer (src/memory/judge.ts `startNoteJudge`: the persona aid in ring 1a, the notes judge in ring
    * 1b; default every `OTHERS.judgePollMs`). Tests: `false` turns it off (`app.noteJudge.runOnce()` by hand), as the harness does,
@@ -486,7 +488,7 @@ export async function buildApp(overrides: Partial<Deps> = {}, options: BuildOpti
   // someone's answer (the friend-request and Agent-add routes call `app.push.requestWaiting` after their commit); the hub says
   // whose session has a socket and whether it answers. Closed before the hub and the database (hooks run last-in first-out):
   // the stop closes the sender first (its retry waits end at once), then waits a bounded time for what is under way.
-  const push = createNotifier({ db: deps.db, apns: deps.apns, presence: app.realtime, conversations: deps.conversations, log: app.log, missing: config.apple.missing, malformed: config.apple.malformed, links: config.apple.app !== null, ...(options.pushTimer === false ? { everyMs: 0 } : {}) });
+  const push = createNotifier({ db: deps.db, apns: deps.apns, presence: app.realtime, conversations: deps.conversations, log: app.log, missing: config.apple.missing, malformed: config.apple.malformed, links: config.apple.app !== null, ...(options.pushTimer === false ? { everyMs: 0 } : {}), ...(options.pushNow ? { now: options.pushNow } : {}) });
   app.decorate("push", push);
   app.addHook("onClose", () => push.close());
 
