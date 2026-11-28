@@ -20,6 +20,7 @@ import { DetailsPanel } from "./pages/DetailsPanel.jsx";
 import { ContactsList, ContactCard } from "./pages/Contacts.jsx";
 import { AgentsList, AgentMain } from "./pages/Agents.jsx";
 import { SettingsList, SettingsMain } from "./pages/Settings.jsx";
+import { SharedAgent } from "./pages/AgentCard.jsx";
 
 const NAV = [
   { id: "chat", label: "消息", icon: MessageCircle },
@@ -283,6 +284,8 @@ export default function Shell() {
       {tabbar && <Rail phone onePane />}
       <p className="sr-only" aria-live="polite" data-route-announcer="" ref={announcer} />
       <ToastRegion />
+      {/* A share link's Agent (`/a/<id>`): its card over the list (pages/AgentCard.jsx). */}
+      <SharedAgent />
     </div>
   );
 }

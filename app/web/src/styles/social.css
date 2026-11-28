@@ -68,3 +68,24 @@
   .social-row-actions { flex: 1 1 100%; justify-content: flex-start; }
 }
 .agent-found .tag { align-self: flex-start; }
+
+/* ───────── finding someone's Agent (find-agent): a member or a result is one button (its own actions apart, beside it); a person's sheet; the
+   share link under the question. Phone width first: everything wraps inside its column, and every control is a 44px target on a touch screen. */
+.member-open {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 14px; padding: 2px 0; border: 0; border-radius: 10px;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.member-open .member-body { min-width: 0; }
+.member-open .member-body > .muted { display: block; font-size: 13px; color: var(--ink-2); overflow-wrap: anywhere; }
+.side-list .member-open { gap: 10px; }
+@media (hover: hover) { .member-open:hover strong { color: var(--purple-dark); } }
+.person-sheet .member-rows li { border-bottom: 0; padding-left: 0; padding-right: 0; }
+.person-sheet .reason { margin-top: 0; }
+.social-share { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 4px 0 8px; }
+.social-share .muted { flex: 1 1 14em; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+@media (pointer: coarse), (max-width: 480px) {
+  .member-open { min-height: 44px; }
+  .find-agent .btn, .person-sheet .btn, .social-share .btn { min-height: 44px; }
+}
+/* An Agent's face on its own (a sheet's while its card is asked, or one not to be found by me): the tag keeps its size, as in the card. */
+.agent-found-head .member-body > .tag { align-self: flex-start; }

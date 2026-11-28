@@ -9,6 +9,8 @@ import { LeaveAgentModal } from "./LeaveAgentModal.jsx";
 import { ReportModal } from "./ReportModal.jsx";
 import { NewTopicModal } from "./AgentChatBits.jsx";
 import { AgentModelSwitch, everywhereNote } from "./ModelPicker.jsx";
+import { MemberSheet } from "./PersonProfile.jsx";
+import { ME } from "../data/identities.js";
 import { X } from "../icons.js";
 
 /** What my Agent does not get from its conversation with me. */
@@ -24,6 +26,8 @@ export function DetailsPanel({ conv }) {
   const [topicOpen, setTopicOpen] = useState(false);
   // A social conversation I speak in (the Agent's card): 举报, 拉黑, 移除; its owner (who only watches) gets none of them. Only while the switch is on.
   const [socialDialog, setSocialDialog] = useState(null);
+  /** The group member whose profile or card is open (Agent social). */
+  const [memberOpen, setMemberOpen] = useState(null);
   const visitorOf = isSocialConv(conv) && !isObserved(conv) && socialOn(state) ? socialEnds(state, conv).agentId : null;
   const watchedAgent = isObserved(conv) && socialOn(state) ? socialEnds(state, conv).agentId : null;
   const blocked = conv.type === "human" && iBlocked(state, other);
@@ -49,18 +53,32 @@ export function DetailsPanel({ conv }) {
 
         <h3>发言成员</h3>
         <ul className="side-list">
-          {conv.members.map((id) => (
-            <li key={id}>
-              <Avatar id={id} size={36} />
-              <IdentityLine id={id} />
-              {/* In a group, an Agent of mine: its model, switched right here (for every conversation it is in). */}
-              {group && isMyAgent(state, id) && state.agents[id].loaded && (
-                <span className="side-model">
-                  <AgentModelSwitch agentId={id} note={everywhereNote(nameOf(state, id))} />
-                </span>
-              )}
-            </li>
-          ))}
+          {conv.members.map((id) => {
+            const face = (
+              <>
+                <Avatar id={id} size={36} />
+                <IdentityLine id={id} />
+              </>
+            );
+            return (
+              <li key={id}>
+                {/* Agent social, in a group: every member but me is a button of its own (a profile, an Agent's card), apart from the model switch. */}
+                {group && socialOn(state) && id !== ME ? (
+                  <button type="button" className="member-open" onClick={() => setMemberOpen(id)}>
+                    {face}
+                  </button>
+                ) : (
+                  face
+                )}
+                {/* In a group, an Agent of mine: its model, switched right here (for every conversation it is in). */}
+                {group && isMyAgent(state, id) && state.agents[id].loaded && (
+                  <span className="side-model">
+                    <AgentModelSwitch agentId={id} note={everywhereNote(nameOf(state, id))} />
+                  </span>
+                )}
+              </li>
+            );
+          })}
         </ul>
         <KV
           rows={[
@@ -91,6 +109,7 @@ export function DetailsPanel({ conv }) {
       {socialDialog === "report" && visitorOf && <ReportModal agentId={visitorOf} onClose={() => setSocialDialog(null)} />}
       {socialDialog === "block" && visitorOf && <BlockModal target={visitorOf} onClose={() => setSocialDialog(null)} />}
       {socialDialog === "leave" && visitorOf && <LeaveAgentModal agentId={visitorOf} onClose={() => setSocialDialog(null)} />}
+      {memberOpen && <MemberSheet id={memberOpen} onClose={() => setMemberOpen(null)} />}
     </div>
   );
 }

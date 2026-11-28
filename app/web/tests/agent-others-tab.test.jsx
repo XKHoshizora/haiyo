@@ -192,3 +192,28 @@ describe("the people, the requests and the conversations", () => {
     expect(inMain().getByText("小助手还没有和别人聊过。")).toBeTruthy();
   });
 });
+
+describe("the share link (find-agent D2): 「复制链接」 on the Agent's own 「别人」 tab", () => {
+  it("copies the link to the Agent's card, by its id on this site, and says so", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    await openTab();
+    expect(inMain().getByText("把链接发给别人，对方打开就能找到小助手。")).toBeTruthy();
+    await click(inMain().getByRole("button", { name: "复制链接" }));
+    expect(writeText).toHaveBeenCalledWith(`${location.origin}/a/${AG1}`);
+    expect(toastText()).toBe("已复制");
+  });
+
+  it("a refused clipboard says so in the words a message's 复制 uses", async () => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn(async () => Promise.reject(new Error("denied"))) } });
+    document.execCommand = vi.fn(() => false);
+    await openTab();
+    await click(inMain().getByRole("button", { name: "复制链接" }));
+    expect(toastText()).toBe("没能复制，请再试一次");
+  });
+
+  it("while nobody may add it (不让别人添加) there is no link to give", async () => {
+    await openTab({ contacts: contactsOf({ policy: "none" }) });
+    expect(inMain().queryByRole("button", { name: "复制链接" })).toBeNull();
+  });
+});

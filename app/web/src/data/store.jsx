@@ -35,6 +35,8 @@ export function emptyState(me = null) {
       agentView: "detail",
       agentTab: "profile",
       pane: "list",
+      /** The Agent whose card a share link asked for (`/a/<id>`: state/location.js `navAtStart`), or null. */
+      agentCard: null,
     },
     /** Conversations I left on purpose (this session): no notice when a Back arrives at their entry. */
     left: [],

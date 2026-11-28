@@ -1108,6 +1108,10 @@ export function createActions({ getModel, setModel, api = routes, uuid, now, epo
     // Agent social (lane A, lane B): thin on purpose: the route's answer, or its error as it came (a 401 signs out). What a page
     // keeps of it is the page's: nothing is held here, and none is called while the site's switch is off (state.social.enabled).
     listAgentContacts: () => call(() => api.listAgentContacts()),
+    /** Finding people and Agents: my circle by a fragment; `exact: true` also the exact account name (routes.js `searchPrincipals`). */
+    searchPrincipals: (q, options) => call(() => api.searchPrincipals(q, options)),
+    /** An Agent's card by its id (a group's member, a share link): 404 when it is not to be found by me, whatever the reason. */
+    agentCard: (agentId) => call(() => api.agentCard(agentId)),
     // (What these change reaches the held `agentContacts` through the `social` fetch they ask for: nothing is kept here.)
     addAgentContact: (agentId) => call(() => api.addAgentContact(agentId), () => request({ social: true, sync: true })),
     approveAgentContact: (agentId, subjectId) => call(() => api.approveAgentContact(agentId, subjectId), () => request({ social: true, sync: true })),

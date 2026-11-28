@@ -5,7 +5,7 @@ import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } f
 import { ApiError, bumpSessionEpoch, request, setUnauthenticatedHandler } from "../src/api/http.js";
 import { deferred, fakeTimers, fakeTransport, settle, syncOf } from "./fixtures.js";
 import { AuthRoot, useSession } from "../src/auth/AuthRoot.jsx";
-import { clearResetToken, takeReturn } from "../src/auth/router.js";
+import { RETURN_KEY, clearResetToken, takeReturn } from "../src/auth/router.js";
 import { LEGAL_VERSIONS } from "../src/legal/versions.js";
 import { draftKeys, peekDraft, saveDraft } from "../src/data/drafts.js";
 import { StoreProvider, createDataLayer, emptyState } from "../src/data/store.jsx";
@@ -1113,4 +1113,103 @@ describe("session lifecycle", () => {
     expect(layers[0].stop).toHaveBeenCalledTimes(2);
     expect(layers[layers.length - 1].start).toHaveBeenCalledTimes(1);
   });
+});
+
+describe("a share link opened signed out (find-agent D3): its page after the sign-in, the sign-up and the terms", () => {
+  const LINK = "/a/00000000-0000-4000-8000-0000000000b6";
+  const signInApi = (over) => fakeApi({ getMe: vi.fn().mockRejectedValueOnce(SIGNED_OUT()).mockResolvedValue(ANN), ...over });
+  const signIn = async () => {
+    typeInto("邮箱", "ann@x.com");
+    typeInto("密码", "correct horse");
+    submit("登录");
+    await screen.findByTestId("app");
+  };
+  /** A signed-out visit of the link: the sign-in page, the link kept. Then the tab is gone (a reload, or the mail opened another). */
+  const visitedSignedOut = async () => {
+    at(LINK);
+    mount(outApi());
+    await screen.findByRole("button", { name: "登录" });
+    expect(place()).toBe("/signin");
+    // (Kept where another tab of this browser finds it: the page of the verification mail is one.)
+    expect(JSON.parse(localStorage.getItem(RETURN_KEY) ?? "null")?.path).toBe(LINK);
+    cleanup();
+  };
+  afterEach(() => localStorage.clear());
+
+  it("signed in from another tab (the sign-in page reloaded): the link's page", async () => {
+    await visitedSignedOut();
+    at("/signin");
+    mount(signInApi());
+    await screen.findByRole("button", { name: "登录" });
+    await signIn();
+    expect(place()).toBe(LINK);
+  });
+
+  it("after registering: the verification mail's page, 去登录, then the link's page", async () => {
+    await visitedSignedOut();
+    at("/verify");
+    mount(signInApi());
+    await screen.findByText("邮箱已验证，现在可以登录了。");
+    fireEvent.click(screen.getByRole("link", { name: "去登录" }));
+    await screen.findByRole("button", { name: "登录" });
+    await signIn();
+    expect(place()).toBe(LINK);
+  });
+
+  it("an account asked to accept the terms first: the question, then the link's page", async () => {
+    await visitedSignedOut();
+    at("/signin");
+    mount(fakeApi({ getMe: vi.fn().mockRejectedValueOnce(SIGNED_OUT()).mockResolvedValue({ ...ANN, termsAccepted: false }), acceptTerms: vi.fn(async () => ({ termsAccepted: true })) }));
+    await screen.findByRole("button", { name: "登录" });
+    typeInto("邮箱", "ann@x.com");
+    typeInto("密码", "correct horse");
+    submit("登录");
+    await screen.findByRole("heading", { name: "请确认条款" });
+    tickAcceptance();
+    submit("同意并继续");
+    await screen.findByTestId("app");
+    expect(place()).toBe(LINK);
+  });
+
+  it("taken once: the next sign-in is the list", async () => {
+    await visitedSignedOut();
+    at("/signin");
+    mount(signInApi());
+    await screen.findByRole("button", { name: "登录" });
+    await signIn();
+    cleanup();
+    at("/signin");
+    mount(signInApi());
+    await screen.findByRole("button", { name: "登录" });
+    await signIn();
+    expect(place()).toBe("/");
+  });
+
+  it.each([
+    ["another site", { path: "//evil.example/a/00000000-0000-4000-8000-0000000000b6", at: Date.now() }],
+    ["a page that is not a share link", { path: "/settings/providers", at: Date.now() }],
+    ["a link kept more than a day ago", { path: LINK, at: Date.now() - 25 * 60 * 60 * 1000 }],
+    ["not what this page writes", "/a/00000000-0000-4000-8000-0000000000b6"],
+  ])("what is kept is checked when it is read: %s is not followed", async (_label, stored) => {
+    localStorage.setItem(RETURN_KEY, typeof stored === "string" ? stored : JSON.stringify(stored));
+    at("/signin");
+    mount(signInApi());
+    await screen.findByRole("button", { name: "登录" });
+    await signIn();
+    expect(place()).toBe("/");
+  });
+
+  it("a sign-out keeps nothing of it", async () => {
+    at(LINK);
+    mount(fakeApi(), () => <SignOutProbe />);
+    fireEvent.click(await screen.findByText("probe-sign-out"));
+    await screen.findByRole("button", { name: "登录" });
+    expect(localStorage.getItem(RETURN_KEY)).toBeNull();
+    expect(takeReturn()).toBeNull();
+  });
+
+  function SignOutProbe() {
+    const session = useSession();
+    return <button type="button" onClick={() => session.signOut()}>probe-sign-out</button>;
+  }
 });

@@ -7,7 +7,7 @@ export const PAGE_KEYS = ["section", "pane", "convId", "view", "contactId", "age
 /** Keys that are the state of a page, not a page: kept in the entry for Forward, never a new entry. */
 export const SOFT_KEYS = ["agentTab", "profileTab"];
 /** Keys that are neither: a one-off request or note that is not a place (a message to scroll to, a conversation waited for, a form's field to focus...). */
-export const TRANSIENT_KEYS = ["addFriend", "opening", "focus", "agentFocus", "agentNote", "providerCreated", "navIntent"];
+export const TRANSIENT_KEYS = ["addFriend", "opening", "focus", "agentFocus", "agentNote", "providerCreated", "navIntent", "agentCard"];
 /**
  * Every key of the navigation is a page key (an address says it), a soft key (state of a page, kept in its entry) or a transient one.
  * tests/app-history.test.jsx fails when the navigation has a key that is none of these: a new key that decides a page needs an address.
@@ -73,11 +73,26 @@ export function navOfAddress({ path, overlay = null }) {
 export const readEntry = () => (window.history.state?.af ? window.history.state : null);
 /** The address the browser is at: the path and the overlay of our entry. */
 export const hereNow = () => ({ path: window.location.pathname, overlay: readEntry()?.overlay ?? null });
+const SHARE_LINK = /^\/a\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\/?$/;
+/**
+ * The Agent a share link names (`/a/<agent id>`, find-agent D2), lower-cased, or null for any other path. The link is no page: it is opened
+ * as a request over the chat list (`agentCard`, a transient key), and the address becomes the list's.
+ */
+export function shareLinkOf(path) {
+  const match = SHARE_LINK.exec(typeof path === "string" ? path : "");
+  return match ? match[1].toLowerCase() : null;
+}
+
 /**
  * The navigation a cold start begins with: the address the browser is at (and the soft state its entry kept). The store starts from it, so the
- * very first render is the page the address says — never the list first and the page after an effect has read the address.
+ * very first render is the page the address says — never the list first and the page after an effect has read the address. A share link is the
+ * chat list with its Agent's card asked for (`agentCard`).
  */
-export const navAtStart = () => ({ ...navOfAddress(hereNow()), ...(readEntry()?.nav ?? {}) });
+export const navAtStart = () => {
+  const here = hereNow();
+  const agentCard = shareLinkOf(here.path);
+  return { ...navOfAddress(here), ...(readEntry()?.nav ?? {}), ...(agentCard ? { agentCard } : {}) };
+};
 
 /** The key of an address (what an entry's `prev` holds). */
 export const keyOf = ({ path, overlay = null }) => `${path}#${overlay ?? ""}`;

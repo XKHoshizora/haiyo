@@ -17,15 +17,16 @@ function AvatarImage({ src }) {
   return <img src={src} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} />;
 }
 
-export function Avatar({ id, size = 44, online = false, className = "" }) {
+/** `name`: the name of someone this page does not hold (a search's result, a share link's Agent), for the initial and the label. */
+export function Avatar({ id, size = 44, online = false, className = "", name = "" }) {
   const { state } = useStore();
   const who = entity(state, id);
   // Anyone has an avatar at the service (a generated one when none was uploaded), also a member who left;
   // only "me" before the first load is not known yet. Every URL carries the avatar's version, so a change shows at once.
   const src = who?.avatar ?? (id && id !== ME ? avatarUrl(id, state.avatarVersions?.[id] ?? 0) : null);
-  const initial = [...String(who?.displayName ?? who?.name ?? "")][0] ?? "";
+  const initial = [...String(who?.displayName ?? who?.name ?? name ?? "")][0] ?? "";
   return (
-    <span className={`avatar ${className}`} style={{ width: size, height: size }} role="img" aria-label={who?.name || "头像"}>
+    <span className={`avatar ${className}`} style={{ width: size, height: size }} role="img" aria-label={who?.name || name || "头像"}>
       <span className="avatar-img avatar-fallback" style={{ width: size, height: size, fontSize: Math.round(size * 0.42) }}>
         {initial}
         {src && <AvatarImage key={src} src={src} />}

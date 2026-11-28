@@ -38,9 +38,11 @@ const visiting = (fields = {}) => ({
 const PEOPLE = [...PRINCIPALS, { ...agentPrincipal(AGB), ownerId: BO, displayName: "小帮手", handle: "bobby.helper" }, { ...agentPrincipal(AG1), ownerId: ME_ID }];
 
 const LANE_A = ["addAgentContact", "approveAgentContact", "declineAgentContact", "removeAgentContact", "getAgentContacts", "putContactPolicy", "putBar", "deleteBar", "reportAgent"];
+/** The search route answering `exact` to the dialog's explicit step (switch on: 查找 is the search's exact step) and no circle. */
+const searchFinds = (exact) => vi.fn(async (q, options = {}) => (options.exact ? { circle: [], exact } : { circle: [] }));
 function routes(over = {}) {
   const api = Object.fromEntries(LANE_A.map((name) => [name, vi.fn(async () => ({ ok: true }))]));
-  return { ...api, lookupPrincipal: vi.fn(async () => found()), ...over };
+  return { ...api, lookupPrincipal: vi.fn(async () => found()), searchPrincipals: searchFinds({ agent: found() }), ...over };
 }
 async function open({ on = true, convs = [], contacts = { mine: [], waiting: [] }, api = routes() } = {}) {
   const app = await openApp({
@@ -51,8 +53,8 @@ async function open({ on = true, convs = [], contacts = { mine: [], waiting: [] 
   return { ...app, api };
 }
 const openAdd = async () => click(button("添加好友"));
-const lookup = async (value) => {
-  fireEvent.change(screen.getByLabelText("对方的账号名"), { target: { value } });
+const lookup = async (value, label = "昵称或账号名") => {
+  fireEvent.change(screen.getByLabelText(label), { target: { value } });
   await click(button("查找"));
 };
 const inDialog = () => within(dialog());
@@ -64,25 +66,28 @@ describe("the add dialog", () => {
     await goContacts();
     await openAdd();
     expect(inDialog().getByText("输入完整的账号名（不是昵称），例如 ann_li。")).toBeTruthy();
-    await lookup("bobby.helper");
+    await lookup("bobby.helper", "对方的账号名");
     expect(inDialog().getByText("账号名由 3–24 位小写字母、数字或下划线组成。")).toBeTruthy();
     expect(inDialog().getByRole("heading", { name: "添加好友" })).toBeTruthy();
     expect(api.lookupPrincipal).not.toHaveBeenCalled();
     api.lookupPrincipal.mockRejectedValueOnce(apiError(404, "not_found"));
-    await lookup("nobody");
+    await lookup("nobody", "对方的账号名");
     expect(inDialog().getByText(/目前还不能添加 Agent 为好友。/)).toBeTruthy();
+    expect(api.searchPrincipals).not.toHaveBeenCalled();
     expect(laneACalls(api)).toEqual([]);
     expect(transport.log).not.toContain("agent-contacts");
   });
 
-  it("switch on: the hint names an Agent's full account name; its card shows avatar, name, handle, 主人 and intro, and the disclosure comes before any button", async () => {
-    await open();
+  it("switch on: the hint says a name or an account name; the Agent's card shows avatar, name, handle, 主人 and intro, and the disclosure comes before any button", async () => {
+    const { api } = await open();
     await goContacts();
     await openAdd();
-    expect(inDialog().getByText("人的账号名，或 Agent 的完整账号名，例如 ann_li.helper")).toBeTruthy();
+    expect(inDialog().getByText("输入昵称或账号名。找不认识的人，要输入对方完整的账号名。")).toBeTruthy();
     // The thing added may be an Agent: the title says so (A-5 re-review, copy #1).
     expect(inDialog().getByRole("heading", { name: "添加好友或 Agent" })).toBeTruthy();
     await lookup("bobby.helper");
+    expect(api.searchPrincipals).toHaveBeenCalledWith("bobby.helper", expect.objectContaining({ exact: true }));
+    expect(api.lookupPrincipal).not.toHaveBeenCalled();
     const card = inDialog().getByLabelText("查找结果");
     expect(within(card).getByText("小帮手")).toBeTruthy();
     expect(within(card).getByText("@bobby.helper")).toBeTruthy();
@@ -96,12 +101,12 @@ describe("the add dialog", () => {
     expect(within(card).getAllByRole("button")).toEqual([add]);
   });
 
-  it("switch on: a name that cannot be an account name is answered with what to type, not with the rule", async () => {
-    await open();
+  it("switch on: a name that finds nothing is answered with what to type, not with the rule", async () => {
+    await open({ api: routes({ searchPrincipals: searchFinds(null) }) });
     await goContacts();
     await openAdd();
     await lookup("x");
-    expect(inDialog().getByText("账号名的格式不对。人的账号名形如 ann_li，Agent 的形如 ann_li.helper。")).toBeTruthy();
+    expect(inDialog().getByText("没有找到。找不认识的人，要输入对方完整的账号名，例如 ann_li。")).toBeTruthy();
   });
 
   it("let in: 「已添加」, the dialog closes and the sync is asked for; waiting: the outcome is said once (toast 「申请已发送」, one notice with what happens after 7 days) and the button is spent", async () => {
@@ -143,9 +148,9 @@ describe("the add dialog", () => {
       await click(button("添加小帮手"));
       expect(toastText()).toBe(text);
     }
-    api.lookupPrincipal.mockRejectedValueOnce(apiError(404, "not_found"));
+    api.searchPrincipals.mockResolvedValueOnce({ circle: [], exact: null });
     await lookup("bobby.nothing");
-    expect(inDialog().getByText("没有找到账号名为 bobby.nothing 的用户或 Agent。")).toBeTruthy();
+    expect(inDialog().getByText("没有找到。找不认识的人，要输入对方完整的账号名，例如 ann_li。")).toBeTruthy();
   });
 
   it("while the add is on its way the dialog cannot be closed from its foot either (A-5 re-review m-h)", async () => {
@@ -167,11 +172,12 @@ describe("the add dialog", () => {
     // (Recognised by its handle before the lookup, which hides it: no "not found", no route.)
     expect(inDialog().getAllByText("你自己的 Agent 不用添加。").length).toBeGreaterThan(0);
     expect(api.lookupPrincipal).not.toHaveBeenCalled();
+    expect(api.searchPrincipals).not.toHaveBeenCalled();
     expect(api.addAgentContact).not.toHaveBeenCalled();
   });
 
   it("a person is found and added as before, with the switch on", async () => {
-    const api = routes({ lookupPrincipal: vi.fn(async () => ({ id: BO, handle: "bob", displayName: "阿波", avatarVersion: 0 })), sendFriendRequest: vi.fn(async () => ({ id: "r1" })) });
+    const api = routes({ searchPrincipals: searchFinds({ person: { id: BO, handle: "bob", displayName: "阿波", avatarVersion: 0 }, agents: [] }), sendFriendRequest: vi.fn(async () => ({ id: "r1" })) });
     await open({ api });
     await goContacts();
     await openAdd();

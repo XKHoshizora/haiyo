@@ -11,6 +11,10 @@ import { Avatar, Btn, Modal, Notice, Tag } from "../ui/primitives.jsx";
 import { useAction, useNow } from "./useAction.js";
 import { MemoryDisclosure } from "./ShownNotes.jsx";
 import { groupMentionsQuestion } from "./AgentForm.jsx";
+import { copyText } from "./messageActions.js";
+
+/** The share link of an Agent (find-agent D2): its card on this site, by its id (`/a/<id>`, state/location.js `shareLinkOf`). */
+export const shareLinkFor = (agentId) => `${globalThis.location.origin}/a/${agentId}`;
 
 /** The one question (in the Agent's name, design §8) and its three answers, word for word (plan "Exact copy"). */
 export const policyQuestion = (name) => `谁可以添加${name}`;
@@ -102,6 +106,7 @@ export function AgentOthersTab({ agent }) {
     if (res.ok) await reload();
   };
   const pick = (id) => setForm({ ...form, picks: form.picks.includes(id) ? form.picks.filter((x) => x !== id) : [...form.picks, id] });
+  const copyLink = async () => dispatch({ type: "toast", text: (await copyText(shareLinkFor(agent.id))) ? "已复制" : "没能复制，请再试一次" });
 
   const people = held.rows.filter((r) => r.state === "live");
   const requests = held.rows.filter((r) => r.state === "requested");
@@ -146,6 +151,15 @@ export function AgentOthersTab({ agent }) {
           </Btn>
         </div>
       </fieldset>
+
+      {/* The share link (find-agent D2): its card, by the Agent's id; it grants nothing (who may add it is the question above), so it has no
+          expiry and nothing to revoke. None while nobody may add it: the link would find nothing. */}
+      {held.policy !== "none" && (
+        <div className="social-share">
+          <p className="muted">{`把链接发给别人，对方打开就能找到${agent.name}。`}</p>
+          <Btn onClick={copyLink}>复制链接</Btn>
+        </div>
+      )}
 
       <h3>{`已添加${agent.name}的人`}</h3>
       {people.length === 0 ? (

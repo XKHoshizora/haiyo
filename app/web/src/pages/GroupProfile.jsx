@@ -5,10 +5,12 @@ import { groupErrorText } from "../data/errorTexts.js";
 import { groupTitle } from "../auth/validation.js";
 import { ME } from "../data/identities.js";
 import { convTitle, entity, isMyAgent, nameOf } from "../state/selectors.js";
+import { socialOn } from "../state/social.js";
 import { Avatar, ConvAvatar, Tag, Btn, Field, IdentityLine, KV, Reason, focusInvalid } from "../ui/primitives.jsx";
 import { AvatarEditor } from "./AvatarEditor.jsx";
 import { Pills } from "./ChatList.jsx";
 import { AddMemberModal, LeaveModal, RemoveMemberModal } from "./GroupModals.jsx";
+import { MemberSheet } from "./PersonProfile.jsx";
 import { useAction } from "./useAction.js";
 import { ChevronLeft } from "../icons.js";
 
@@ -20,8 +22,10 @@ const aboutOf = (state, id) => {
 
 function Members({ conv }) {
   const { state } = useStore();
-  const [dialog, setDialog] = useState(null); // {kind: "add"} | {kind: "remove", id}
+  const [dialog, setDialog] = useState(null); // {kind: "add"} | {kind: "remove", id} | {kind: "open", id}
   const creator = conv.admin === ME;
+  // Agent social: every member but me is a button of its own (a person's profile, an Agent's card), apart from 移除.
+  const opens = socialOn(state);
   return (
     <>
       <h3>群成员</h3>
@@ -30,14 +34,28 @@ function Members({ conv }) {
           const about = aboutOf(state, id);
           // The creator may remove anyone else; an Agent's owner may take their own Agent out.
           const removable = id !== ME && (creator || isMyAgent(state, id));
+          const open = opens && id !== ME;
+          const Body = open ? "span" : "div";
+          const Line = open ? "span" : "p";
+          const face = (
+            <>
+              <Avatar id={id} size={44} />
+              <Body className="member-body">
+                <IdentityLine id={id} extra={isCreator ? <Tag tone="solid">创建者</Tag> : null} />
+                <Line className="muted">{entity(state, id)?.handle ?? ""}</Line>
+                {about && <Line className="muted">{about}</Line>}
+              </Body>
+            </>
+          );
           return (
             <li key={id}>
-              <Avatar id={id} size={44} />
-              <div className="member-body">
-                <IdentityLine id={id} extra={isCreator ? <Tag tone="solid">创建者</Tag> : null} />
-                <p className="muted">{entity(state, id)?.handle ?? ""}</p>
-                {about && <p className="muted">{about}</p>}
-              </div>
+              {open ? (
+                <button type="button" className="member-open" onClick={() => setDialog({ kind: "open", id })}>
+                  {face}
+                </button>
+              ) : (
+                face
+              )}
               <div className="member-actions">
                 {removable && <Btn small onClick={() => setDialog({ kind: "remove", id })}>移除</Btn>}
               </div>
@@ -51,6 +69,7 @@ function Members({ conv }) {
       </div>
       {dialog?.kind === "add" && <AddMemberModal conv={conv} onClose={() => setDialog(null)} />}
       {dialog?.kind === "remove" && <RemoveMemberModal conv={conv} memberId={dialog.id} onClose={() => setDialog(null)} />}
+      {dialog?.kind === "open" && <MemberSheet id={dialog.id} onClose={() => setDialog(null)} />}
     </>
   );
 }
