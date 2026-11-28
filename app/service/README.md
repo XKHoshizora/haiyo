@@ -3892,9 +3892,10 @@ buffered pushes by the rules above.
 ## Push notifications (`src/push/`)
 
 Pushes to the iOS app's phones through APNs (Apple's push service), for messages that arrive while the app is not in
-front. Configured by the four variables in Configuration (`APPLE_TEAM_ID`, `APPLE_BUNDLE_ID`, `APNS_KEY_ID`,
-`APNS_KEY_P8`); without all of them nothing is pushed and nothing else changes. Phones are registered with Push devices
-(the HTTP API above), one row of `push_devices` per signed-in session of the app.
+front, and for requests that newly wait for the person's answer (Requests, below). Configured by the four variables in
+Configuration (`APPLE_TEAM_ID`, `APPLE_BUNDLE_ID`, `APNS_KEY_ID`, `APNS_KEY_P8`); without all of them nothing is pushed
+and nothing else changes. Phones are registered with Push devices (the HTTP API above), one row of `push_devices` per
+signed-in session of the app.
 
 **Which messages.** Every stored message (`ConversationEvents.onMessages`, after commit — where the hub hears of it)
 that counts as unread does (`countsForPush`; the same rule as the sync's `unread` and the web client's
@@ -3939,6 +3940,26 @@ conversation replaces the earlier on the phone), `apns-expiration` (a day: an ol
 service has no unread total (the per-conversation `unread` of `GET /api/sync` exists, a total for a person does not);
 when it does, its number goes in `aps.badge`.
 
+**Requests.** A request that newly waits for a person's answer is pushed to that person's phones: a friend request
+(`POST /api/friend-requests` → 201, to its recipient) and an add of an Agent that waits for its owner's decision
+(`POST /api/agent-contacts` → 202 for a request this call made, to the Agent's owner; such a request exists only while
+`SOCIAL.enabled`). Nothing else: not asking again while one waits, not an add let in at once (201), not a refusal (asking
+back while the other's request is pending is 409 and makes no friendship), not an accept, reject, withdrawal, decline,
+approval or expiry. The route calls `Notifier.requestWaiting` after its commit and never waits for it. The push reads the
+request itself (`waitingSql`: still pending and not past its deadline, an Agent not deleted, no block either way between
+the two sides — what the request's own checks require) and then goes as a message's does: the recipient's phones whose
+session lasts, not while their own session is present, re-checked after a probe without an answer (the phone unchanged
+and a request it stands for still waiting, else `stale`), one push per phone for all requests at a time (`coalesced`), the
+same counters. It carries `{"aps": {"alert": {"title": "Haiyo", "body": "你有新的申请"}, "sound": "default", "thread-id":
+"requests"}}` with `apns-collapse-id: requests` (one notification for every request waiting): nothing of who asks, of whom
+or which Agent, and no `c` — the shell reads only `c` of a tapped notification, so a tap opens the app as it was.
+**The quiet window:** once APNs took a request push for a phone (`sent`; not when it was present, no longer wanted, failed
+or its token dead), no other request push goes to that phone for `REQUEST_QUIET_MS` (10 minutes), whoever asks and
+whatever is asked — counted `coalesced`; the requests are listed in the app all the same. Without it a stranger could ring
+a phone again and again (send, withdraw, send). Per phone and the person signed in on it (another account registering the
+same token starts with none), in memory (a restart forgets the windows; the 10-minute timer forgets those that are over);
+message pushes have none.
+
 **The sender** (`src/push/apns.ts`). `node:http2` to `api.push.apple.com` (a `sandbox` token to
 `api.sandbox.push.apple.com`), one connection per host, kept while it lasts (closed after an hour idle, opened again on
 the next push); a provider token (ES256 JWT signed with `node:crypto`: `kid` the Key ID, `iss` the Team ID, `iat`) used
@@ -3982,12 +4003,13 @@ whatever `MEMORY.changesSweepMs` says) deletes the phones of expired sessions �
 shown again, so an abandoned phone's token would otherwise stay — counted as `push_devices_expired`. Sessions last 7 days
 from their last use, so a phone whose app was not opened for a week gets no more pushes.
 
-**Counters in the log.** Never a token, a conversation's id, a person or any text. `{"metric": "push", "sent", "removed",
-"present", "coalesced", "stale", "failed": {"<class>": n}}` every 10 minutes when anything was counted, and at the stop:
-pushes APNs took, devices deleted for a dead token, phones skipped as present, pushes not made because one was out, pushes
-no longer wanted after a probe, and pushes given up by class (`throttled`, `server`, `network`, `timeout`, `auth`,
-`key_env`, `topic`, `token_rate`, `rejected`, `overloaded`, `closed`, `paused`). `{"metric": "push_off", "missing": [...],
-"malformed": [...], "links": "on" | "off"}` (WARN, variable names only) once at start when some of the four variables are
+**Counters in the log.** Never a token, a conversation's or a request's id, a person or any text. `{"metric": "push",
+"sent", "removed", "present", "coalesced", "stale", "failed": {"<class>": n}}` every 10 minutes when anything was
+counted, and at the stop: pushes APNs took, devices deleted for a dead token, phones skipped as present, pushes not made
+because one was out (or, for requests, the phone's quiet window), pushes no longer wanted after a probe, and pushes given
+up by class (`throttled`, `server`, `network`, `timeout`, `auth`, `key_env`, `topic`, `token_rate`, `rejected`,
+`overloaded`, `closed`, `paused`). `{"metric": "push_off", "missing": [...], "malformed": [...], "links": "on" |
+"off"}` (WARN, variable names only) once at start when some of the four variables are
 set but not all, or one is malformed; `links: "off"` (and the message) when the universal-links file is off too (no valid
 Team and bundle id). `{"metric": "push_config_refused", "class": "auth" | "key_env" | "topic" | "token_rate", "host":
 "sandbox" | "production"}` (WARN) once per class, host and process, the first time that host refuses the configuration,

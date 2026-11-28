@@ -388,7 +388,8 @@ export async function applyPolicy(
 
 export type AddOutcome =
   | { state: "live"; conversationId: string }
-  | { state: "requested"; until: Date }
+  /** `created`: this call made the request (false: it was waiting already, and nothing changed). */
+  | { state: "requested"; until: Date; created: boolean }
   | { refused: "not_found" | "is_yours" }
   | { refused: "cooldown"; availableAt: Date };
 
@@ -494,7 +495,7 @@ export async function addContact(t: Tx, config: Pick<Config, "social" | "others"
   let row = locked.row;
   if (await expireIfLate(t, agentId, subjectId, row)) row = { state: "ended", until: null, end_reason: "expired" };
   if (row?.state === "live") return { state: "live", conversationId: (await ensureSocial(t, subjectId, agentId)).conversationId };
-  if (row?.state === "requested") return { state: "requested", until: row.until! };
+  if (row?.state === "requested") return { state: "requested", until: row.until!, created: false };
 
   const days = config.others.cooldownDays;
   const stopped =
@@ -536,7 +537,7 @@ export async function addContact(t: Tx, config: Pick<Config, "social" | "others"
      returning until`,
     [agentId, subjectId, personId, config.others.requestDays],
   );
-  return { state: "requested", until: asked.rows[0]!.until };
+  return { state: "requested", until: asked.rows[0]!.until, created: true };
 }
 
 /**

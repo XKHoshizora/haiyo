@@ -121,7 +121,10 @@ export function registerSocialRoutes(app: FastifyInstance): void {
       const target = await findByHandle(db, req.body.handle);
       if (!target) throw new AppError(404, "not_found");
       if (target.id === me.id) throw new AppError(400, "invalid_request");
+      // A refusal (already friends, a request pending either way, a block) is thrown by `run`: past it, this call made the request.
       const r = await run(req, (t) => sendRequest(t, me.id, target.id), () => [me.id, target.id]);
+      // After the commit: the recipient's phone is told someone waits for their answer (src/push/notify.ts; never waited for).
+      app.push.requestWaiting({ friendRequestId: r.id });
       return reply.code(201).send({ id: r.id });
     },
   );

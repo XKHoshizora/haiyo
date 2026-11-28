@@ -9,7 +9,8 @@ import { testDatabaseUrl } from "./env.ts";
 const MIGRATIONS_TABLE = "pgmigrations";
 
 /**
- * The clock the reviewer's timers run on in tests (`memory: true`): nothing sleeps. `advance(ms)` moves `now()` and
+ * The clock the reviewer's timers run on in tests (`memory: true`), and the push's quiet windows (src/push/notify.ts
+ * `REQUEST_QUIET_MS`): nothing sleeps. `advance(ms)` moves `now()` and
  * fires, in order of due time, every timer that has come due. `reset()` forgets every timer and puts the clock back on
  * the wall clock.
  */
@@ -170,7 +171,7 @@ export const NO_ANSWER_FLOOR = { ms: 0, jitterMs: 0 } as const;
  * runs outside the app's statement timeout.
  */
 export function useApp(
-  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge" | "webEngine" | "apns">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat" | "greeting" | "pushTimer" | "noteJudgeTimer"> & {
+  extra: Partial<Pick<Deps, "blobs" | "uploads" | "models" | "providerProbe" | "judge" | "webEngine" | "apns">> & { env?: Record<string, string>; config?: Partial<Config> } & Omit<BuildOptions, "memory" | "tools" | "heartbeat" | "greeting" | "pushTimer" | "pushNow" | "noteJudgeTimer"> & {
       memory?: boolean;
       tools?: boolean;
       greeting?: boolean;
@@ -195,8 +196,10 @@ export function useApp(
     mail: { sender: false, ...mail },
     // Nor does the hub's heartbeat run on a timer (`app.realtime.tick()` beats by hand): see `betweenTests`.
     heartbeat: false,
-    // Nor the push's own timer (`app.push.sweepExpired()` / `flush()` by hand): see `betweenTests`.
+    // Nor the push's own timer (`app.push.sweepExpired()` / `flush()` by hand): see `betweenTests`. Its quiet windows run on this
+    // file's clock (`clock.advance` ends one without waiting; it is the wall clock until a test moves it).
     pushTimer: false,
+    pushNow: clock.now,
     // Nor the Agent social worker's (`app.noteJudge.runOnce()` works by hand).
     noteJudgeTimer: false,
   };
