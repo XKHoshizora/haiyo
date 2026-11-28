@@ -46,8 +46,9 @@ test(`${size}: an owner's Agent is found by its full handle, added with the disc
   await goTo(bo.page, "通讯录");
   await bo.page.getByRole("button", { name: "添加好友" }).click();
   const dlg = bo.page.getByRole("dialog");
-  await expect(dlg.getByText("人的账号名，或 Agent 的完整账号名，例如 ann_li.helper")).toBeVisible();
-  await dlg.getByLabel("对方的账号名").fill(full);
+  // (The dialog searches: a name or an account name; the full account name of an Agent is found on 查找: e2e/find-agent.spec.mjs.)
+  await expect(dlg.getByText("输入昵称或账号名。找不认识的人，要输入对方完整的账号名。")).toBeVisible();
+  await dlg.getByLabel("昵称或账号名").fill(full);
   await tall(dlg.getByRole("button", { name: "查找" }));
   await expect(dlg.getByRole("heading", { name: "添加好友或 Agent" })).toBeVisible();
   await dlg.getByRole("button", { name: "查找" }).click();
