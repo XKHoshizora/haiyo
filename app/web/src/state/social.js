@@ -57,7 +57,7 @@ export function agentContactsOf(state) {
 /**
  * The requests held here whose deadline has passed at `now` (data/deadline.js `isPast`), each as a key naming the request and its deadline:
  * friend requests to me and from me, the requests waiting on my Agents, my own asks of someone's Agent. The service lists open requests
- * only, so such a one is held only until the next fetch (which the shell asks for: AppShell `useRefetchLapsed`).
+ * only, so such a one is held only until the next fetch (which the shell asks for: AppShell `RefetchLapsed`).
  */
 export function lapsedRequests(state, now) {
   const keys = [];

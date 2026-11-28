@@ -154,27 +154,40 @@ function useOpenWhenPresent(state, dispatch) {
   }, [opening, dispatch]);
 }
 
+/** How many times one request (by its id and deadline) that has run out here is asked about: skews up to about two minutes heal. */
+const LAPSED_ASKS = 3;
+
 /**
  * A request held here that runs out on the page's one clock (state/social.js `lapsedRequests`) is asked about: the social fetch a `social` push
  * makes. The service lists open requests only, so its answer takes the request off every page (its row, the number on 通讯录, the Agent's
- * 「别人」 tab, which loads again with it), and the card offers 添加好友 again. Until that answer, and whenever the service still lists it,
- * it reads 已过期 with nothing to press. Once per request and deadline: when the answer still lists it (this clock runs ahead of the
- * service's) nothing is asked again for it; only a new deadline is asked about. Several that run out together are one fetch. Nothing while
- * the first sync is not in or the connection is not live: a reconnect fetches social anyway.
+ * 「别人」 tab, which loads again with it). Its card then offers 添加好友 again; for a requester this page knew only through the request, the
+ * person is unknown once it is gone, and the open card goes back to the list without a word (the shell's rule, as after 拒绝). Until that
+ * answer, and while the service still lists it (this clock ahead of the service's), it reads 已过期 with nothing to press, and it is asked
+ * about again on a later tick of the clock: at most LAPSED_ASKS times for one request and deadline in the shell's life, then never (a device
+ * clock further off waits for the next ordinary fetch). One fetch per tick however many ran out; nothing while the first sync is not in or
+ * the connection is not live (a reconnect fetches social anyway). Renders nothing: only it re-reads the clock each minute, not the shell.
  */
-function useRefetchLapsed(state, actions) {
+function RefetchLapsed() {
+  const { state, actions } = useStore();
   const now = useNow();
-  const asked = useRef(new Set());
+  // key → {count, at}: how often it was asked about, the clock's time of the last ask. Never cleared or pruned while the shell is shown, so
+  // the cap holds even for a request that leaves an answer and comes back with the same deadline.
+  const asks = useRef(new Map());
+  const lastAsk = useRef(null);
   const lapsed = state.loaded ? lapsedRequests(state, now).join("\n") : "";
   const live = state.loaded && state.connection === "live";
   useEffect(() => {
-    if (!live) return;
-    const keys = lapsed ? lapsed.split("\n") : [];
-    const fresh = keys.some((key) => !asked.current.has(key));
-    // (Only the ones still held are remembered: the set never grows past what is on the page.)
-    asked.current = new Set(keys);
-    if (fresh) actions.refreshSocial();
-  }, [lapsed, live, actions]);
+    if (!live || !lapsed || lastAsk.current === now) return;
+    const due = lapsed.split("\n").filter((key) => {
+      const asked = asks.current.get(key);
+      return !asked || (asked.count < LAPSED_ASKS && asked.at < now);
+    });
+    if (due.length === 0) return;
+    for (const key of due) asks.current.set(key, { count: (asks.current.get(key)?.count ?? 0) + 1, at: now });
+    lastAsk.current = now;
+    actions.refreshSocial();
+  }, [lapsed, live, now, actions]);
+  return null;
 }
 
 /** A detached search window belongs to the conversation that is open: once another one is, the window is dropped. */
@@ -232,7 +245,6 @@ export default function Shell() {
   useCloseWhenRemoved(state, dispatch);
   useOpenWhenPresent(state, dispatch);
   useDropStrayWindows(state, actions);
-  useRefetchLapsed(state, actions);
   useShellOpen(); // (A tapped notification of the iOS app: nothing in a browser.)
   const { nav } = state;
   const conv = state.convs[nav.convId];
@@ -326,6 +338,7 @@ export default function Shell() {
       <ToastRegion />
       {/* A share link's Agent (`/a/<id>`): its card over the list (pages/AgentCard.jsx). */}
       <SharedAgent />
+      <RefetchLapsed />
     </div>
   );
 }

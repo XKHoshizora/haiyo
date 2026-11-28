@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
-// A request this page holds that runs out (on the page's one clock) is asked about once: the social fetch a `social` push makes. The
-// service lists open requests only, so its answer takes the request off every page by itself — the card offers 添加好友 again, an Agent's
-// request row goes. Once per request and deadline: when the service still lists it (this clock runs ahead of the service's) nothing is asked
-// again on the following ticks; several that run out together are one fetch; nothing is asked while the connection is not live.
+// A request this page holds that runs out (on the page's one clock) is asked about: the social fetch a `social` push makes. The service
+// lists open requests only, so its answer takes the request off every page by itself — the card offers 添加好友 again (or, for a requester
+// known only through the request, goes back to the list), an Agent's request row goes. While the service still lists it (this clock ahead of
+// the service's) it is asked about again on the next ticks, 3 times in all per request and deadline, then never; one fetch per tick however
+// many ran out; nothing while the connection is not live.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, within } from "@testing-library/react";
 import { lapsedRequests } from "../src/state/social.js";
 import { ME } from "../src/data/identities.js";
 import { AG1, ANN, BO, D1, PRINCIPALS, agentPrincipal, direct, emptySocial, syncOf, wire } from "./fixtures.js";
-import { CY, DORA, NOW, PEOPLE, click, elapse, flush, goContacts, inMain, installBrowser, openApp, request, rowNames } from "./harness.jsx";
+import { CY, DORA, NOW, PEOPLE, click, elapse, flush, goContacts, inMain, installBrowser, openApp, push, request, rowNames, toastText } from "./harness.jsx";
 
 beforeEach(installBrowser);
 afterEach(() => {
@@ -88,7 +89,7 @@ describe("a request that runs out while held", () => {
     expect(inMain().getByRole("button", { name: "添加好友" })).toBeTruthy();
   });
 
-  it("this clock ahead of the service's: the answer still lists it, it stays as it reads (已过期, nothing to press), and nothing is asked again on the following ticks", async () => {
+  it("this clock ahead of the service's: while the answer still lists it, it reads 已过期 with nothing to press and is asked about again on the next ticks — 3 asks in all, then never", async () => {
     const { transport } = await openApp({ sync: baseSync, social: socialWith({ incoming: [request("r1", PEOPLE[BO], { expiresAt: at(90_000) })] }) });
     await goContacts();
     await openRow("阿波");
@@ -98,8 +99,73 @@ describe("a request that runs out while held", () => {
     expect(fetches(transport)).toBe(before + 1);
     expect(inMain().queryByRole("button", { name: "同意" })).toBeNull();
     expect(document.querySelector(".main-col .rel-rows .tag").textContent).toBe("已过期");
+    await elapse(60_000);
+    await flush();
+    expect(fetches(transport)).toBe(before + 2);
+    await elapse(60_000);
+    await flush();
+    expect(fetches(transport)).toBe(before + 3);
     await elapse(10 * 60_000);
+    expect(fetches(transport)).toBe(before + 3);
+    expect(document.querySelector(".main-col .rel-rows .tag").textContent).toBe("已过期");
+  });
+
+  it("the second answer no longer lists it: the row goes and 添加好友 is back, and there is no third ask", async () => {
+    const { env, transport } = await openApp({ sync: baseSync, social: socialWith({ incoming: [request("r1", PEOPLE[BO], { expiresAt: at(90_000) })] }) });
+    await goContacts();
+    await openRow("阿波");
+    const before = fetches(transport);
+    await elapse(2 * 60_000);
+    await flush();
     expect(fetches(transport)).toBe(before + 1);
+    // (The service's own deadline passes between the two asks.)
+    env.social = socialWith();
+    await elapse(60_000);
+    await flush();
+    expect(fetches(transport)).toBe(before + 2);
+    expect(rowNames()).not.toContain("阿波");
+    expect(inMain().getByRole("button", { name: "添加好友" })).toBeTruthy();
+    await elapse(10 * 60_000);
+    expect(fetches(transport)).toBe(before + 2);
+  });
+
+  it("the count is per request and deadline for the page's life: a request that leaves and comes back with the same deadline is not asked about afresh", async () => {
+    const lapsing = () => socialWith({ incoming: [request("r1", PEOPLE[BO], { expiresAt: at(90_000) })] });
+    const { env, transport } = await openApp({ sync: baseSync, social: lapsing() });
+    const before = fetches(transport);
+    await elapse(2 * 60_000);
+    await flush();
+    expect(fetches(transport)).toBe(before + 1);
+    // Gone from one answer (asked again on the next tick), back in the next one: the two asks it had still count.
+    env.social = socialWith();
+    await elapse(60_000);
+    await flush();
+    expect(fetches(transport)).toBe(before + 2);
+    env.social = lapsing();
+    await push(transport, { type: "social" });
+    await flush();
+    const pushed = fetches(transport);
+    await elapse(60_000);
+    await flush();
+    expect(fetches(transport)).toBe(pushed + 1);
+    await elapse(10 * 60_000);
+    expect(fetches(transport)).toBe(pushed + 1);
+  });
+
+  it("a requester this page knew only through the request: once the answer drops it the open card goes back to the list without a word (as after 拒绝)", async () => {
+    const { env, transport } = await openApp({ sync: baseSync, social: socialWith({ incoming: [request("r1", PEOPLE[CY], { expiresAt: at(90_000) })] }) });
+    await goContacts();
+    await openRow("小陈");
+    expect(inMain().getByRole("button", { name: "同意" })).toBeTruthy();
+    const before = fetches(transport);
+    env.social = socialWith();
+    await elapse(2 * 60_000);
+    await flush();
+    expect(fetches(transport)).toBe(before + 1);
+    expect(rowNames()).toEqual(["小安"]);
+    expect(document.querySelector(".main-col").textContent).toBe("选择一位联系人");
+    expect(document.querySelector(".app").dataset.pane).toBe("list");
+    expect(toastText()).toBeNull();
   });
 
   it("several that run out on the same tick are one fetch", async () => {
