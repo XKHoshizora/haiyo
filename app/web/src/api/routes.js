@@ -47,6 +47,17 @@ export const getMemoryConversion = () => request("GET", "/api/memory/language/co
 /** The model that tidies my memory: a model as an Agent's is written, or null for the site's. The answer does not echo it. */
 export const updateMemoryModel = (memoryModel) => request("PATCH", "/api/me", { memoryModel });
 export const lookupPrincipal = (handle) => request("GET", withQuery("/api/principals/lookup", { handle }));
+/**
+ * Finding people and Agents (Agent social; app/service/README.md `GET /api/principals/search`). Typed along: → {circle: [Entry]},
+ * the caller's circle by a fragment of a name (Entry: a friend {id, handle, displayName, avatarVersion}, or an Agent's profile
+ * {id, handle, displayName, avatarVersion, kind: "agent", ownerId, ownerName, intro} with via: "friend" | "group" | "contact"),
+ * 120 a minute. `exact: true` (Enter, 查找) also → exact: {person, agents: [profile]} | {agent: profile} | null, in the lookup's
+ * 30 a minute. `signal` ends a request a newer one replaced. 404 while the site's switch is off.
+ */
+export const searchPrincipals = (q, { exact = false, signal } = {}) =>
+  request("GET", withQuery("/api/principals/search", { q, exact: exact ? 1 : undefined }), undefined, signal ? { signal } : undefined);
+/** An Agent's profile by id (a group's member, a share link `/a/<id>`) → profile; 404 not_found when it is not discoverable to me, whatever the reason. */
+export const agentCard = (agentId) => request("GET", `/api/principals/agent-card/${seg(agentId)}`);
 
 // ───────── social
 export const getSocial = () => request("GET", "/api/social");

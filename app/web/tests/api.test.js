@@ -30,6 +30,11 @@ const table = [
   ["getMe", () => routes.getMe(), "GET", "/api/me", undefined],
   ["updateMe", () => routes.updateMe("新名字"), "PATCH", "/api/me", { displayName: "新名字" }],
   ["lookupPrincipal", () => routes.lookupPrincipal("bob"), "GET", "/api/principals/lookup?handle=bob", undefined],
+  // Finding someone's Agent (find-agent design, D1, D6): the suggestions typed along, the explicit step, and the card by id.
+  ["searchPrincipals", () => routes.searchPrincipals("小 林%_"), "GET", "/api/principals/search?q=%E5%B0%8F+%E6%9E%97%25_", undefined],
+  ["searchPrincipals (exact)", () => routes.searchPrincipals("@ann_li", { exact: true }), "GET", "/api/principals/search?q=%40ann_li&exact=1", undefined],
+  ["searchPrincipals (not exact)", () => routes.searchPrincipals("ann", { exact: false }), "GET", "/api/principals/search?q=ann", undefined],
+  ["agentCard", () => routes.agentCard(ID), "GET", `/api/principals/agent-card/${ID}`, undefined],
   ["getSocial", () => routes.getSocial(), "GET", "/api/social", undefined],
   ["sendFriendRequest", () => routes.sendFriendRequest("bob"), "POST", "/api/friend-requests", { handle: "bob" }],
   ["getFriendRequest", () => routes.getFriendRequest(ID), "GET", `/api/friend-requests/${ID}`, undefined],
@@ -114,6 +119,16 @@ describe("routes.js builds the service's method, path and body", () => {
   it("encodes path segments", async () => {
     await routes.getMessage("a/b", 1);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/conversations/a%2Fb/messages/1");
+    await routes.agentCard("a/b");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/principals/agent-card/a%2Fb");
+  });
+
+  it("searchPrincipals passes an abort signal through, so a newer suggestion can end an older one", async () => {
+    const controller = new AbortController();
+    await routes.searchPrincipals("an", { signal: controller.signal });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/principals/search?q=an");
+    expect(init.signal).toBe(controller.signal);
   });
 
   it("uploadAgentAvatar PUTs the raw image bytes to the Agent's avatar", async () => {
