@@ -6,7 +6,8 @@ import { useApp } from "./helpers/harness.ts";
 /**
  * Fix round 1, m18: an app STARTED with the site's Agent social switch off (the default configuration, the state ring 1a deploys in),
  * not one whose switch is flipped while it runs. Every route of Agent social's access answers 404 before it reads or writes anything
- * (a malformed parameter is still the schema's 400); the lookup takes no dotted handle at all (its schema is read once, when the
+ * (a malformed parameter is still the schema's 400, but on the two find-an-Agent routes, which answer 404 before the shape: find-agent
+ * fix round 1, F6); the lookup takes no dotted handle at all (its schema is read once, when the
  * routes are registered: 400); an Agent cannot be blocked; the money routes are live; and nothing was written.
  */
 const { app, db } = useApp({ env: SITE_ENV, agentWorker: false });
@@ -33,6 +34,10 @@ describe("an app started with the switch off", () => {
       ["GET", `/api/principals/search?q=${owner.handle}`],
       ["GET", `/api/principals/search?q=${owner.handle}&exact=1`],
       ["GET", `/api/principals/agent-card/${agent.id}`],
+      // …answered so before the query's shape is (fix round 1, F6): an endpoint that is not there has no shape to get wrong.
+      ["GET", "/api/principals/search"],
+      ["GET", "/api/principals/search?q=a%00b&exact=2"],
+      ["GET", `/api/principals/agent-card/${"x".repeat(150)}`],
     ];
     for (const [method, path, body] of routes) {
       for (const who of [owner, other]) expect([method, path, (await api(app, who, method, path, body)).status]).toEqual([method, path, 404]);

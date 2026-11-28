@@ -30,4 +30,15 @@ describe("search rate limits", () => {
     expect((await search(a, b.handle, true)).status).toBe(200);
     expect((await search(b, "ca")).status).toBe(200);
   });
+
+  it("the card by id counts in the suggestions' 120 (fix round 1, F8), found or not, malformed or not", async () => {
+    const [a, b] = [await signUp(app, "erin"), await signUp(app, "frank")];
+    const card = (who: Actor, id: string) => api(app, who, "GET", `/api/principals/agent-card/${id}`);
+    for (let i = 1; i <= 60; i++) expect((await search(a, "fr")).status).toBe(200);
+    for (let i = 1; i <= 60; i++) expect((await card(a, i % 2 ? "6a0d4c2e-1b3f-4a5e-9c7d-8e9f0a1b2c3d" : "abc")).status).toBe(404);
+    expect(await card(a, "abc")).toEqual(LIMITED);
+    expect(await search(a, "fr")).toEqual(LIMITED);
+    expect((await search(a, b.handle, true)).status).toBe(200);
+    expect((await card(b, "abc")).status).toBe(404);
+  });
 });

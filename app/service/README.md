@@ -597,7 +597,8 @@ too — and holds the reply worker's loop until the truncate has ended; the hub'
   runs the `GET` handler). `HEAD /api/attachments/:id` and `HEAD /api/principals/:id/avatar` are their own routes (below): they do not read the whole file.
 - **Order of checks.** Cross-site `Origin` (403) → shape of path, query and body (400) → session (401) → the terms accepted (403 `terms_required`) →
   rate limit (429) → the route's own rules. Registration counts its rate limit before checking the shape,
-  and so do the sign-in, reset-request and verification-link limiters in front of Better Auth.
+  and so do the sign-in, reset-request and verification-link limiters in front of Better Auth. While `SOCIAL.enabled` is off,
+  `GET /api/principals/search` and `GET /api/principals/agent-card/:id` check the session and then answer 404, before the shape.
 
 ### Errors
 
@@ -652,7 +653,7 @@ ones the route then refuses. Over a limit: 429 `rate_limited`. Only
 | `POST /api/auth/request-password-reset` | 10 per client address + e-mail, and 60 per client address (counters of its own) | address (+ e-mail) |
 | `GET /api/auth/verify-email` | 10 per client address + the e-mail the link names, and 60 per client address (counters of its own) | address (+ e-mail) |
 | `GET /api/principals/lookup` + `GET /api/principals/search` with `exact=1` | 30 together | principal |
-| `GET /api/principals/search` without `exact` (the suggestions typed along) | 120 (a budget of its own) | principal |
+| `GET /api/principals/search` without `exact` (the suggestions typed along) + `GET /api/principals/agent-card/:id` | 120 together | principal |
 | `GET /api/usage` | 60 | principal |
 | `GET /api/models` | 120 | principal |
 | `PATCH /api/me` | 10 | principal |
@@ -2824,50 +2825,63 @@ read (to tell its type), never the whole file. `Content-Length` is only sent for
 
 #### `GET /api/principals/search`
 
-*Session: required.* Finds people and Agents to add (Agent social; 404 `not_found` for every request while `SOCIAL.enabled` is
-off, after the session is checked and before anything is read or counted). Who can be listed to you has two sources and no third:
+*Session: required.* Finds people and Agents to add (Agent social). While `SOCIAL.enabled` is off: 404 `not_found` for every
+signed-in request, once the session is checked and before anything else — the query's shape included (a missing or malformed
+`q` is the same 404: a route that is not there has nothing to get wrong) — nothing read, nothing counted. Who can be listed to
+you has two sources and no third:
 
-1. **Your circle**, matched by any fragment of a name: your current friends; the Agents your current friends own; the Agents that
-   are current members of a group (`type` `group`: no social conversation, no direct chat) you are a current member of now — not
-   after you or it left or was removed; and the Agents with a row of `agent_contacts` whose subject is you, in any state (an Agent
-   your own Agent was let in to is not one: its subject is your Agent).
+1. **Your circle**, matched by any fragment of a name: your current friends (people: a friendship row naming an Agent, which the
+   schema could hold, makes no friend of it); the Agents your current friends own; the Agents that are current members of a group
+   (`type` `group`: no social conversation, no direct chat) you are a current member of now — not after you or it left or was
+   removed; and the Agents with a row of `agent_contacts` whose subject is you, in any state (an Agent your own Agent was let in
+   to is not one: its subject is your Agent).
 2. **One exact handle**, only when asked (`exact=1`: the client's Enter or 查找, never while typing): a person and their Agents,
    or one Agent by its full handle. Nobody outside your circle is ever found by a fragment.
 
 Every Agent in either passes the rule of discovery (the lookup's: not deleted or disabled, its contact policy not `none`, no
 block either way between you and its owner or the Agent, not your own), inside the statement that finds it, before anything is
 ordered, counted or cut: a hidden Agent is answered exactly as one that does not exist — the same status, the same body, the same
-others around it, the same number of statements.
+others around it, the same number of statements. With `exact=1` the circle, the exact match and the person's Agents are read on
+one snapshot (one read-only transaction): the answer is what one moment's visibility gives, so an Agent is never in the circle and
+missing from the exact match, or the other way round.
 
-- Query: `q`, one line of at most 100 characters (a control character, a lone surrogate or more: 400 `invalid_request`),
-  trimmed, a leading `@` dropped; empty finds nobody (200, an empty circle). `exact`: absent, or `1` (anything else 400).
+- Query: `q`, trimmed and a leading `@` dropped, then one line of at most 100 characters (the `@` not counted; a control
+  character, a lone surrogate or more: 400 `invalid_request`); empty finds nobody (200, an empty circle). `exact`: absent, or
+  `1` (anything else 400).
 - 200 `{"circle": [Entry]}`, and with `exact=1` `{"circle": [Entry], "exact": Exact}`.
-- **Entry**: a friend `{"id", "handle", "displayName", "avatarVersion"}`; an Agent its **profile** `{"id", "handle",
-  "displayName", "avatarVersion", "kind": "agent", "ownerId", "ownerName", "intro"}` (the lookup's card without `field`) and
-  `"via": "friend" | "group" | "contact"` — its first source, in that order; each Agent once. Matching: `q` is a substring of
+- **Entry**: a friend `{"id", "handle", "displayName", "avatarVersion"}`; an Agent its **card** — the lookup's, exactly:
+  `{"id", "handle", "displayName", "avatarVersion", "kind": "agent", "ownerId", "ownerName", "intro", "field"}` — and
+  `"via": "friend" | "group" | "contact"`, its first source, in that order; each Agent once. Matching: `q` is a substring of
   the name, case ignored, every character itself (`%`, `_` and `\` are plain characters): a friend's display name or handle; an
   Agent's name, its full handle (so its name part and its owner's handle) or its owner's display name. Order: friends, friends'
   Agents, group Agents, contacts, each by name; at most 20. A friend you block or who blocks you is still listed (they are in
   your `friends`), their Agents are not.
 - **Exact**: `q` lower-cased. A person's handle shape (`^[a-z0-9_]{3,24}$`) and such a person: `{"person": {"id", "handle",
-  "displayName", "avatarVersion"}, "agents": [profile]}` — the person as the lookup answers them (also yourself, also when a block
+  "displayName", "avatarVersion"}, "agents": [card]}` — the person as the lookup answers them (also yourself, also when a block
   lies either way: then `agents` is empty), and every Agent of theirs discoverable to you, by name, no pages (at most the largest
-  number `AGENT_TIERS` lets an account own). An Agent's full handle shape and a discoverable Agent of it: `{"agent": profile}`.
-  Anything else — nobody has the handle, a handle given up (Handles), an Agent that is not discoverable, no handle's shape — `null`.
-- Limit: without `exact`, 120 per minute (a budget of its own: the client may drop a 429 there quietly and keep its last list);
-  with `exact=1`, the lookup's 30 per minute, together with it.
+  number `AGENT_TIERS` lets an account own: an owner moved to a smaller tier keeps every Agent they have, so none is cut). An
+  Agent's full handle shape and a discoverable Agent of it: `{"agent": card}`, the lookup's answer for that handle byte for
+  byte. Anything else — nobody has the handle, a handle given up (Handles), an Agent that is not discoverable, no handle's shape —
+  `null`.
+- Limit: without `exact`, 120 per minute together with `GET /api/principals/agent-card/:id` (the client may drop a 429 there
+  quietly and keep its last list); with `exact=1`, the lookup's 30 per minute, together with it.
 - Nothing of it is logged: the request log shows the path without its query (as for every route), and the route writes no line.
 
 #### `GET /api/principals/agent-card/:id`
 
-*Session: required.* An Agent's profile by its id (a tap on a group's member; the share link `APP_ORIGIN/a/<Agent id>`, which
-the web client's page takes, `/a/*` being one of its paths): 200 `{"id", "handle", "displayName", "avatarVersion", "kind":
-"agent", "ownerId", "ownerName", "intro"}` while the Agent is discoverable to you (as for `GET /api/principals/search`). 404
-`not_found` otherwise, exactly the same for an Agent that is hidden from you (also one in a group with you that takes no contacts),
-for one that does not exist or was deleted, for your own, for a person's id and for an id that is no id (any string is taken: a
-malformed one is not a 400); a hidden Agent and a missing one in the same number of statements. 404 for every request while
-`SOCIAL.enabled` is off. Not rate-limited, as the avatar by id is not: an Agent's id cannot be guessed, it is learnt from a
-handle (rate-limited), a group one shares with it, or a link someone gave.
+*Session: required.* An Agent's card by its id (a tap on a group's member; the share link `APP_ORIGIN/a/<Agent id>`, which
+the web client's page takes, `/a/*` being one of its paths): 200 the lookup's card `{"id", "handle", "displayName",
+"avatarVersion", "kind": "agent", "ownerId", "ownerName", "intro", "field"}` while the Agent is discoverable to you (as for
+`GET /api/principals/search`). 404 `not_found` otherwise, exactly the same for an Agent that is hidden from you (also one in a
+group with you that takes no contacts), for one that does not exist or was deleted, for your own, for a person's id and for a
+string that is no id — any string is taken, also one over the router's 100-character parameter limit (never 414) or with a slash
+(the route below): it is read as no id, in the same one statement as a missing id. 404 for every signed-in request while
+`SOCIAL.enabled` is off. Limit: 120 per minute together with the search's suggestions, found or not.
+
+#### `GET /api/principals/agent-card/*`
+
+The same route for an id the router would not take as `:id` (over 100 characters, or with a `/`): the same checks and the same
+answer, 404 `not_found`.
 
 ### Friends and blocks
 

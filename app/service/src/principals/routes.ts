@@ -12,21 +12,27 @@ import { setDream, setMemoryLanguage, setMemoryModel, setNewNotes } from "../mem
 import { requirePrincipal } from "../session.ts";
 import { defaultAvatarSvg } from "./avatar.ts";
 import { AVATAR_HEADERS, avatarBudget, readStoredAvatar, registerAvatarPut, storeAvatar } from "./avatar-upload.ts";
-import { circleOf, exactMatch, findAgentProfile } from "./search.ts";
+import { onSnapshot } from "../db.ts";
+import { circleOf, exactMatch, findAgentCard } from "./search.ts";
 import { AGENT_HANDLE_PATTERN, changeHandle, findAgentByHandle, findAvatarSubject, findByHandle, HANDLE_PATTERN, swapAvatarKey, updateDisplayName } from "./store.ts";
 
 const publicPrincipal = z.object({ id: z.string(), handle: z.string(), displayName: z.string(), avatarVersion: z.number() });
-/** A discoverable Agent as anyone it is discoverable to sees it (find-agent design, R2, D1, D7): no `field`. A person has no `kind`. */
-const agentProfile = publicPrincipal.extend({ kind: z.literal("agent"), ownerId: z.string(), ownerName: z.string(), intro: z.string() });
-/** A discoverable Agent as a lookup answers it (plan A2): its profile and its field. First in the union: a person has no `kind`. */
-const agentCard = agentProfile.extend({ field: z.string() });
-/** What a search answers (find-agent design, D4, D6, D7): the circle, and with `exact=1` the exact match. */
+/**
+ * A discoverable Agent as anyone it is discoverable to is told of it (plan A2): its profile, its owner's name, its intro and its field.
+ * The one card: the lookup, the search and the card by id all answer it (find-agent fix round 1, F4). First in a union: a person has
+ * no `kind`.
+ */
+const agentCard = publicPrincipal.extend({ kind: z.literal("agent"), ownerId: z.string(), ownerName: z.string(), intro: z.string(), field: z.string() });
+/** What a search answers (find-agent design, D4, D6): the circle, and with `exact=1` the exact match. */
 const searchAnswer = z.object({
-  circle: z.array(z.union([agentProfile.extend({ via: z.enum(["friend", "group", "contact"]) }), publicPrincipal])),
-  exact: z.union([z.object({ person: publicPrincipal, agents: z.array(agentProfile) }), z.object({ agent: agentProfile }), z.null()]).optional(),
+  circle: z.array(z.union([agentCard.extend({ via: z.enum(["friend", "group", "contact"]) }), publicPrincipal])),
+  exact: z.union([z.object({ person: publicPrincipal, agents: z.array(agentCard) }), z.object({ agent: agentCard }), z.null()]).optional(),
 });
-/** A search's text: one line of at most 100 characters, trimmed, a leading `@` dropped; empty finds nobody. */
-const searchText = userText(0, 100, { singleLine: true }).transform((s) => s.replace(/^@/, "").trim());
+/** A search's text: trimmed and a leading `@` dropped, then one line of at most 100 characters (F7); empty finds nobody. */
+const searchText = z
+  .string()
+  .transform((s) => s.trim().replace(/^@/, ""))
+  .pipe(userText(0, 100, { singleLine: true }));
 
 export function registerPrincipalRoutes(app: FastifyInstance): void {
   const { db, blobs } = app.deps;
@@ -145,15 +151,19 @@ export function registerPrincipalRoutes(app: FastifyInstance): void {
     },
   );
 
-  // Finding someone's Agent (find-agent design): both routes are Agent social's, 404 while its switch is off (asked at each request,
-  // after the session, as the routes of agent-contact-routes.ts ask it), and neither logs what it was asked or what it found.
-  const requireSocial = (): void => {
-    if (!app.deps.config.social.enabled) throw notFound();
+  // Finding someone's Agent (find-agent design): both routes are Agent social's, and neither logs what it was asked or what it found.
+  // While the switch is off they answer 404 after the session (as the routes of agent-contact-routes.ts do) and before the shape of
+  // the request is looked at (fix round 1, F6): a route that is not there has no query to get wrong. Asked at each request.
+  const socialGate = async (req: FastifyRequest): Promise<void> => {
+    if (app.deps.config.social.enabled) return;
+    await requirePrincipal(req);
+    throw notFound();
   };
 
   api.get(
     "/api/principals/search",
     {
+      preValidation: socialGate,
       schema: {
         params: z.object({}),
         querystring: z.object({ q: searchText, exact: z.literal("1").optional() }),
@@ -162,29 +172,38 @@ export function registerPrincipalRoutes(app: FastifyInstance): void {
     },
     async (req) => {
       const me = await requirePrincipal(req);
-      requireSocial();
       // Typing suggests the circle only; the exact step (Enter, 查找) is a lookup, in the lookup's budget (D6).
       const explicit = req.query.exact !== undefined;
       await (explicit ? lookupLimit : suggestLimit)(req, me.id);
       const term = req.query.q;
-      const circle = term === "" ? [] : await circleOf(db, me.id, term, app.deps.config);
-      if (!explicit) return { circle };
-      return { circle, exact: term === "" ? null : await exactMatch(db, me.id, term, app.deps.config) };
+      if (!explicit) return { circle: term === "" ? [] : await circleOf(db, me.id, term, app.deps.config) };
+      if (term === "") return { circle: [], exact: null };
+      // One moment (F1): the circle, the exact match and the person's Agents all read on one snapshot, so the answer is one that a
+      // single state of who is visible gives — never an Agent in the circle and hidden from the exact match, or the other way round.
+      return onSnapshot(db, async (t) => {
+        const circle = await circleOf(t, me.id, term, app.deps.config);
+        return { circle, exact: await exactMatch(t, me.id, term, app.deps.config) };
+      });
     },
   );
 
-  api.get(
-    "/api/principals/agent-card/:id",
-    // Any string: a malformed id is answered as a hidden or missing Agent is (D1), not as a malformed request.
-    { schema: { params: z.object({ id: z.string() }), querystring: z.object({}), response: { 200: agentProfile } } },
-    async (req) => {
-      const me = await requirePrincipal(req);
-      requireSocial();
-      const id = uuidParam.safeParse(req.params.id);
-      const found = id.success ? await findAgentProfile(db, id.data, me.id, app.deps.config) : null;
-      if (!found) throw notFound();
-      return found;
-    },
+  // The card by id (D1), in the suggestions' budget (F8). Any string is taken and a string that is no id is read as SQL null: the
+  // same one statement and the same 404 as a missing id (F5). The wildcard twin takes the id the router's parameter limit (100
+  // characters) would otherwise refuse with 414 before any route (or a path with a slash): the same handler, the same answer.
+  const answerCard = async (req: FastifyRequest, given: string): Promise<z.infer<typeof agentCard>> => {
+    const me = await requirePrincipal(req);
+    await suggestLimit(req, me.id);
+    const id = uuidParam.safeParse(given);
+    const found = await findAgentCard(db, id.success ? id.data : null, me.id, app.deps.config);
+    if (!found) throw notFound();
+    return found;
+  };
+  const cardSchema = { querystring: z.object({}), response: { 200: agentCard } };
+  api.get("/api/principals/agent-card/:id", { preValidation: socialGate, schema: { params: z.object({ id: z.string() }), ...cardSchema } }, (req) =>
+    answerCard(req, req.params.id),
+  );
+  api.get("/api/principals/agent-card/*", { preValidation: socialGate, schema: { params: z.object({ "*": z.string() }), ...cardSchema } }, (req) =>
+    answerCard(req, req.params["*"]),
   );
 
   const avatarSchema = { params: z.object({ id: uuidParam }), querystring: z.object({}) };

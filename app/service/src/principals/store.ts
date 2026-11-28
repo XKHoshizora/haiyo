@@ -97,8 +97,38 @@ export async function findByHandle(db: Queryable, handle: string): Promise<Publi
   return r ? { id: r.id, handle: r.handle, displayName: r.display_name, avatarVersion: r.avatar_version } : null;
 }
 
-/** What a lookup tells of a discoverable Agent: its public profile and its owner's name, nothing else. */
+/**
+ * What anyone an Agent is discoverable to is told of it: its public profile, its owner's name, its intro and its field, nothing
+ * else. The one card of an Agent: the lookup, the search and the card by id all answer it (find-agent fix round 1, F4).
+ */
 export type AgentCard = PublicPrincipal & { kind: "agent"; ownerId: string; ownerName: string; intro: string; field: string };
+
+/**
+ * SQL: the select list of an Agent's card — Agent `ag` (a `principals` alias), its owner `o` (a `principals` alias) and its `agents`
+ * row `a` — and `agentCardOf`, its row's mapping: every query that answers a card reads it through these two.
+ */
+export const AGENT_CARD_COLUMNS = `ag.id, ${handleOf("ag")} as handle, ag.display_name, ag.avatar_version, ag.owner_id, o.display_name as owner_name, a.intro, a.field`;
+export interface AgentCardRow {
+  id: string;
+  handle: string;
+  display_name: string;
+  avatar_version: number;
+  owner_id: string;
+  owner_name: string;
+  intro: string;
+  field: string;
+}
+export const agentCardOf = (r: AgentCardRow): AgentCard => ({
+  id: r.id,
+  handle: r.handle,
+  displayName: r.display_name,
+  avatarVersion: r.avatar_version,
+  kind: "agent",
+  ownerId: r.owner_id,
+  ownerName: r.owner_name,
+  intro: r.intro,
+  field: r.field,
+});
 
 /**
  * A discoverable Agent by its full handle `<owner's handle>.<name part>`, as `handleOf` builds it, case ignored. Null for every
@@ -110,8 +140,8 @@ export async function findAgentByHandle(q: Queryable, handle: string, viewerId: 
   const h = handle.toLowerCase();
   if (!AGENT_HANDLE_PATTERN.test(h)) return null;
   const dot = h.indexOf(".");
-  const { rows } = await q.query<{ id: string; handle: string; display_name: string; avatar_version: number; owner_id: string; owner_name: string; intro: string; field: string }>(
-    `select ag.id, ${handleOf("ag")} as handle, ag.display_name, ag.avatar_version, ag.owner_id, o.display_name as owner_name, a.intro, a.field
+  const { rows } = await q.query<AgentCardRow>(
+    `select ${AGENT_CARD_COLUMNS}
        from principals o
        join principals ag on ag.owner_id = o.id and ag.kind = 'agent' and ag.handle = $2
        join agents a on a.principal_id = ag.id and a.deleted_at is null
@@ -119,10 +149,7 @@ export async function findAgentByHandle(q: Queryable, handle: string, viewerId: 
         and ${discoverableSql({ agent: "ag.id", viewer: "$3::uuid", socialOn: config.social.enabled ? "true" : "false" })}`,
     [h.slice(0, dot), h.slice(dot + 1), viewerId],
   );
-  const r = rows[0];
-  return r
-    ? { id: r.id, handle: r.handle, displayName: r.display_name, avatarVersion: r.avatar_version, kind: "agent", ownerId: r.owner_id, ownerName: r.owner_name, intro: r.intro, field: r.field }
-    : null;
+  return rows[0] ? agentCardOf(rows[0]) : null;
 }
 
 /**

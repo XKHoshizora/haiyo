@@ -1,3 +1,4 @@
+import pg from "pg";
 import { describe, expect, it, vi } from "vitest";
 import { api, befriend, group, signUp, type Actor, type ApiResult } from "./helpers/actors.ts";
 import { mustCreateAgent, SITE_ENV } from "./helpers/agents.ts";
@@ -27,9 +28,14 @@ const plusTier = (id: string) => sql("insert into accounts (principal_id, tier) 
 const addToGroup = async (who: Actor, g: string, principalId: string) => expect((await api(app, who, "POST", `/api/conversations/${g}/members`, { principalId })).status).toBe(201);
 const leaveGroup = async (who: Actor, g: string, principalId: string) => expect((await api(app, who, "DELETE", `/api/conversations/${g}/members/${principalId}`)).status).toBe(200);
 
-/** The statements one call sends through the app's pool (the session's own included: the same for every call compared). */
+const lookup = (who: Actor, handle: string) => api(app, who, "GET", `/api/principals/lookup?handle=${handle}`);
+
+/**
+ * Every statement one call sends to the database, on any connection — the pool's, a transaction's (the explicit step reads on one
+ * snapshot), the session's own (the same for every call compared).
+ */
 async function counted(fn: () => Promise<ApiResult>): Promise<ApiResult & { queries: number }> {
-  const spy = vi.spyOn(app.deps.db, "query");
+  const spy = vi.spyOn(pg.Client.prototype, "query");
   try {
     const r = await fn();
     return { ...r, queries: spy.mock.calls.length };
@@ -42,9 +48,12 @@ interface MadeAgent {
   id: string;
   handle: string;
   avatarVersion: number;
+  field: string;
 }
-const agentOf = (owner: Actor, namePart: string, name: string, intro = "") => mustCreateAgent(app, owner, { handle: namePart, name, intro }) as Promise<MadeAgent>;
-/** The card of an Agent as the new routes answer it: the R2 fields and nothing else (no `field`; D1, D7). */
+// Every Agent has a field: the one card shape carries it (fix round 1, F4).
+const agentOf = (owner: Actor, namePart: string, name: string, intro = "") =>
+  mustCreateAgent(app, owner, { handle: namePart, name, intro, field: `${namePart} field` }) as Promise<MadeAgent>;
+/** The card of an Agent as every route answers it: the lookup's card, `field` included (fix round 1, F4). */
 const cardOf = (a: MadeAgent, owner: Actor, ownerName: string, displayName: string, intro: string) => ({
   id: a.id,
   handle: a.handle,
@@ -54,8 +63,9 @@ const cardOf = (a: MadeAgent, owner: Actor, ownerName: string, displayName: stri
   ownerId: owner.id,
   ownerName,
   intro,
+  field: a.field,
 });
-const CARD_KEYS = ["avatarVersion", "displayName", "handle", "id", "intro", "kind", "ownerId", "ownerName"];
+const CARD_KEYS = ["avatarVersion", "displayName", "field", "handle", "id", "intro", "kind", "ownerId", "ownerName"];
 const PERSON_KEYS = ["avatarVersion", "displayName", "handle", "id"];
 
 describe("the circle: friends and their Agents", () => {
@@ -78,6 +88,9 @@ describe("the circle: friends and their Agents", () => {
     ]);
     expect(Object.keys(r.json.circle[0]).sort()).toEqual(PERSON_KEYS);
     expect(Object.keys(r.json.circle[1]).sort()).toEqual([...CARD_KEYS, "via"].sort());
+    // One card shape: an Agent of the circle is the lookup's answer for its handle, and why it is there (F4).
+    expect(r.json.circle[1]).toEqual({ ...(await lookup(me, kite.handle)).json, via: "friend" });
+    expect(r.json.circle[0]).toEqual((await lookup(me, fred.handle)).json);
 
     expect(circleIds(await search(me, "HAWK"))).toEqual([kite.id]); // the Agent's name, case ignored
     expect(circleIds(await search(me, "cfred.kite"))).toEqual([kite.id]); // its full handle
@@ -108,6 +121,56 @@ describe("the circle: friends and their Agents", () => {
       await sql("delete from blocks");
     }
     expect(circleIds(await search(me, "bfred"))).toEqual([fred.id, bot.id]);
+  });
+});
+
+describe("the circle: a friendship row that names an Agent", () => {
+  it("is no friend: the schema lets such a row be stored, and the Agent is never a person's card, hidden or not (F2)", async () => {
+    const me = await signUp(app, "rme");
+    const ann = await signUp(app, "rann");
+    const bot = await agentOf(ann, "rowbot", "Rowan");
+    await sql("insert into friendships (a_id, b_id) values (least($1::uuid, $2::uuid), greatest($1::uuid, $2::uuid))", [me.id, bot.id]);
+    await sql("update agents set disabled_at = now() where principal_id = $1", [bot.id]);
+    expect(await search(me, "rowan")).toEqual({ status: 200, json: { circle: [] } });
+    expect(await search(me, "rann.rowbot")).toEqual({ status: 200, json: { circle: [] } });
+    await sql("update agents set disabled_at = null where principal_id = $1", [bot.id]);
+    expect(await search(me, "rowan")).toEqual({ status: 200, json: { circle: [] } });
+  });
+});
+
+describe("the explicit step: one moment", () => {
+  it("reads the circle and the exact match on one snapshot: an Agent hidden between the two reads is in both or in neither (F1)", async () => {
+    const me = await signUp(app, "pme");
+    const fred = await signUp(app, "pfred");
+    await befriend(app, me, fred);
+    const bot = await agentOf(fred, "snapbot", "Snap");
+    const original = pg.Client.prototype.query as (...a: unknown[]) => unknown;
+    let hidden = false;
+    const hide = () => db.query("update agents set contact_policy = 'none' where principal_id = $1", [bot.id]);
+    // The moment the circle's statement has its answer, the Agent stops taking contacts (another connection, committed at once).
+    const spy = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (this: pg.Client, ...args: unknown[]) {
+      const [text, values, done] = args;
+      const statement = typeof text === "string" ? text : (text as { text?: string } | undefined)?.text;
+      if (hidden || typeof statement !== "string" || !statement.includes("with friends as")) return original.apply(this, args);
+      hidden = true;
+      if (typeof done === "function") {
+        return original.call(this, text, values, (err: unknown, res: unknown) => void hide().finally(() => (done as (e: unknown, r: unknown) => void)(err, res)));
+      }
+      return (original.call(this, text, values) as Promise<unknown>).then(async (res) => {
+        await hide();
+        return res;
+      });
+    } as typeof pg.Client.prototype.query);
+    let r: ApiResult;
+    try {
+      r = await search(me, "pfred.snapbot", true);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(hidden).toBe(true);
+    expect([circleIds(r), r.json.exact?.agent?.id ?? null]).toEqual([[bot.id], bot.id]);
+    // Asked again, it is hidden in both.
+    expect(await search(me, "pfred.snapbot", true)).toEqual({ status: 200, json: { circle: [], exact: null } });
   });
 });
 
@@ -288,7 +351,11 @@ describe("the exact step: a person by their handle, and their Agents", () => {
         },
       },
     });
-    for (const a of r.json.exact.agents) expect(Object.keys(a).sort()).toEqual(CARD_KEYS);
+    for (const a of r.json.exact.agents) {
+      expect(Object.keys(a).sort()).toEqual(CARD_KEYS);
+      expect(a).toEqual((await lookup(me, a.handle)).json); // the lookup's card (F4)
+    }
+    expect(r.json.exact.person).toEqual((await lookup(me, "xann")).json);
     expect((await search(me, " @XANN ", true)).json).toEqual(r.json);
 
     // A block either way: the person as the lookup answers them, no Agent.
@@ -346,6 +413,10 @@ describe("the exact step: an Agent by its full handle", () => {
     const bot = await agentOf(ann, "kbot", "Kay", "knows things");
     const r = await search(me, "@KANN.KBOT", true);
     expect(r).toEqual({ status: 200, json: { circle: [], exact: { agent: cardOf(bot, ann, "kann", "Kay", "knows things") } } });
+    // Today's lookup answer for the same handle, byte for byte (F4).
+    const looked = await app.inject({ method: "GET", url: "/api/principals/lookup?handle=kann.kbot", headers: { cookie: me.cookie } });
+    const searched = await app.inject({ method: "GET", url: "/api/principals/search?q=kann.kbot&exact=1", headers: { cookie: me.cookie } });
+    expect(searched.body).toBe(`{"circle":[],"exact":{"agent":${looked.body}}}`);
 
     const unknown = await counted(() => search(me, "kann.nobody", true));
     expect(unknown.json).toEqual({ circle: [], exact: null });
@@ -363,6 +434,7 @@ describe("GET /api/principals/agent-card/:id", () => {
     const r = await card(me, bot.id);
     expect(r).toEqual({ status: 200, json: cardOf(bot, ann, "dann", "Dee", "card intro") });
     expect(Object.keys(r.json).sort()).toEqual(CARD_KEYS);
+    expect(r.json).toEqual((await lookup(me, bot.handle)).json); // the lookup's card (F4)
     expect(await card(me, bot.id.toUpperCase())).toEqual(r);
 
     const missing = await counted(() => card(me, "6a0d4c2e-1b3f-4a5e-9c7d-8e9f0a1b2c3d"));
@@ -380,7 +452,8 @@ describe("GET /api/principals/agent-card/:id", () => {
       expect([name, h.status, h.json, h.queries]).toEqual([name, missing.status, missing.json, missing.queries]);
       await undo();
     }
-    // Its owner, a person's id, and ids that are no id: the same 404.
+    // Its owner, a person's id, and ids that are no id — short, over the router's parameter limit, with a slash, encoded NUL:
+    // the same 404, never 400 or 414, in the same one read as a missing id (F5).
     for (const [who, id] of [
       [ann, bot.id],
       [me, ann.id],
@@ -388,8 +461,13 @@ describe("GET /api/principals/agent-card/:id", () => {
       [me, "1"],
       [me, `${bot.id}x`],
       [me, encodeURIComponent(`{${bot.id}}`)],
+      [me, "x".repeat(150)],
+      [me, "x".repeat(10_000)],
+      [me, `${bot.id}/x`],
+      [me, "%00"],
     ] as const) {
-      expect([id, await card(who, id)]).toEqual([id, { status: 404, json: { error: "not_found" } }]);
+      const r = await counted(() => card(who, id));
+      expect([id.slice(0, 40), r.status, r.json, r.queries]).toEqual([id.slice(0, 40), 404, { error: "not_found" }, missing.queries]);
     }
     expect((await api(app, ann, "DELETE", `/api/agents/${bot.id}`)).status).toBe(200);
     expect(await card(me, bot.id)).toEqual({ status: 404, json: { error: "not_found" } });
@@ -408,14 +486,24 @@ describe("GET /api/principals/agent-card/:id", () => {
 });
 
 describe("the switch off", () => {
-  it("both routes answer 404 before reading anything, as the other routes of Agent social do", async () => {
+  it("both routes answer 404 after the session and before anything else — the query's shape included (F6) — as the other routes of Agent social do", async () => {
     const me = await signUp(app, "ume");
     const ann = await signUp(app, "uann");
     const bot = await agentOf(ann, "ubot", "You");
     const social = app.deps.config.social;
     (app.deps.config as { social: unknown }).social = { enabled: false };
     try {
-      for (const url of ["/api/principals/search?q=uann", "/api/principals/search?q=uann&exact=1", `/api/principals/agent-card/${bot.id}`, "/api/principals/agent-card/abc"]) {
+      for (const url of [
+        "/api/principals/search?q=uann",
+        "/api/principals/search?q=uann&exact=1",
+        "/api/principals/search",
+        "/api/principals/search?q=a%00b",
+        "/api/principals/search?q=a&exact=2",
+        `/api/principals/search?q=${"a".repeat(101)}`,
+        `/api/principals/agent-card/${bot.id}`,
+        "/api/principals/agent-card/abc",
+        `/api/principals/agent-card/${"x".repeat(150)}`,
+      ]) {
         expect([url, await api(app, me, "GET", url)]).toEqual([url, { status: 404, json: { error: "not_found" } }]);
         expect([url, (await api(app, null, "GET", url)).status]).toEqual([url, 401]);
       }
@@ -441,6 +529,10 @@ describe("the query's shape", () => {
       expect([url, (await api(app, me, "GET", url)).status]).toEqual([url, 400]);
     }
     expect((await search(me, "a".repeat(100))).status).toBe(200);
+    // The leading @ is dropped before the length is counted (F7).
+    expect((await search(me, `@${"a".repeat(100)}`)).status).toBe(200);
+    expect((await search(me, ` @${"a".repeat(100)} `)).status).toBe(200);
+    expect((await search(me, `@${"a".repeat(101)}`)).status).toBe(400);
   });
 });
 
