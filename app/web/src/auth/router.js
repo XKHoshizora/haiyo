@@ -92,8 +92,8 @@ let returnTo = null;
  * verification mail, whose link opens a page of its own. Only a share link's path is written there, and it is checked again when read.
  */
 export const RETURN_KEY = "agent-family:return-to";
-/** How long a kept share link is followed: a sign-up waits on an invite code and a mail, not on a day. */
-const RETURN_KEPT_MS = 24 * 60 * 60 * 1000;
+/** How long a kept share link is followed: a sign-up's mail comes in minutes (fix round 1, G1: an hour at most). */
+const RETURN_KEPT_MS = 60 * 60 * 1000;
 
 function storage() {
   try {
@@ -109,27 +109,31 @@ function forgetStored() {
     // nothing kept, or nowhere to keep it
   }
 }
-/** The share link kept, when it is one, not older than a day, and written by this page; else null. */
-function readStored() {
+/**
+ * The share link kept, taken: when it is exactly what this page writes (`/a/<agent id>`, nothing before or after it) and not older than an
+ * hour, its path; else null. Whatever was there is gone afterwards.
+ */
+function takeStored() {
   let kept = null;
   try {
     kept = JSON.parse(storage()?.getItem(RETURN_KEY) ?? "null");
   } catch {
-    return null;
+    kept = null;
   }
+  forgetStored();
   if (!kept || typeof kept.path !== "string" || !Number.isFinite(kept.at)) return null;
   if (Date.now() - kept.at > RETURN_KEPT_MS || kept.at > Date.now() + 60_000) return null;
   const agentId = shareLinkOf(kept.path);
-  return agentId ? `/a/${agentId}` : null;
+  return agentId && kept.path === `/a/${agentId}` ? kept.path : null;
 }
 
 /**
  * A signed-out visit to a page of the app: its path is kept for after the sign-in — in memory, and a share link (`/a/<agent id>`) in the
- * browser's storage instead, where the sign-in of another tab finds it (the memory holds it only when the storage cannot).
+ * browser's storage instead, where the sign-in of another tab finds it (the memory holds it only when the storage cannot). Another visit
+ * leaves a kept share link alone (fix round 1, G1): only following it ends it.
  */
 export const rememberReturn = (path) => {
   returnTo = path && path !== "/" ? path : null;
-  forgetStored();
   const agentId = shareLinkOf(path);
   if (!agentId) return;
   try {
@@ -139,12 +143,14 @@ export const rememberReturn = (path) => {
     // (No storage here: this tab's memory keeps it.)
   }
 };
-/** The path remembered by `rememberReturn` (this tab's, else a share link kept by any tab of this browser), once. */
+/** The path remembered by `rememberReturn` (this tab's, else a share link kept by any tab of this browser), once: the one followed is gone. */
 export function takeReturn() {
-  const path = returnTo ?? readStored();
-  returnTo = null;
-  forgetStored();
-  return path;
+  if (returnTo !== null) {
+    const path = returnTo;
+    returnTo = null;
+    return path;
+  }
+  return takeStored();
 }
 
 // ───────── the reset token

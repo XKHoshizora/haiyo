@@ -5,7 +5,7 @@ import { HANDLE_PATTERN, NAME_PART_PATTERN } from "../auth/validation.js";
 import { Avatar, Btn, Field, Modal, Reason } from "../ui/primitives.jsx";
 import { socialOn } from "../state/social.js";
 import { useAction } from "./useAction.js";
-import { AgentCard, AgentRow, AgentSheet } from "./AgentCard.jsx";
+import { AgentCard, AgentRow, AgentSheet, useOfferedAgents } from "./AgentCard.jsx";
 import { FriendRequestButton, PersonAgents, PersonProfile, PersonRow, whyNot } from "./PersonProfile.jsx";
 
 /** An Agent's full account name: `<owner's handle>.<name part>`. */
@@ -83,13 +83,17 @@ const listOf = (answer) => (Array.isArray(answer?.circle) ? answer.circle : []);
 /**
  * Switch on. As I type, my circle (friends, their Agents, the Agents of my groups, the Agents I added), 300 ms after the last key; the newest
  * request wins (an older one is ended, its answer dropped), and a refused suggestion is quiet (the last list stays). 查找 or Enter is the exact
- * step: also the person of that exact account name with their Agents, or the Agent of that full name (the one card). A person opens their
- * profile, an Agent its card; every Agent ends in the existing add (AgentCard.jsx).
+ * step: also the person of that exact account name with their Agents, or the Agent of that full name (the one card). It is sequenced as the
+ * suggestions are (fix round 1, G7): a new one ends the one on its way, whose answer is dropped. A person opens their profile, an Agent its
+ * card; every Agent ends in the existing add (AgentCard.jsx), and one that cannot be added any more (404, a block) is no longer listed (G2).
  */
 function FindModal({ onClose, returnTo }) {
   const { state, actions } = useStore();
   const action = useAction();
-  const { busy, run } = action;
+  const { busy } = action;
+  const { offered, drop } = useOfferedAgents();
+  /** The number of the explicit step on its way (0: none): 查找 reads 查找中… meanwhile, and stays pressable. */
+  const [finding, setFinding] = useState(0);
   const [text, setText] = useState("");
   /** The latest list of my circle that came (what is shown while the next is asked). */
   const [circle, setCircle] = useState([]);
@@ -112,7 +116,15 @@ function FindModal({ onClose, returnTo }) {
     timer.current = null;
     inflight.current?.abort();
     inflight.current = null;
+    setFinding(0);
     return latest.current;
+  };
+  /** One request of the search (a suggestion, or the exact step): ended when another starts. → its answer, or null once another replaced it. */
+  const ask = async (mine, options) => {
+    const controller = new AbortController();
+    inflight.current = controller;
+    const answer = await actions.searchPrincipals(query, { ...options, signal: controller.signal });
+    return mine === latest.current ? answer : null;
   };
 
   useEffect(() => {
@@ -125,16 +137,14 @@ function FindModal({ onClose, returnTo }) {
     }
     timer.current = window.setTimeout(() => {
       timer.current = null;
-      const mine = askAnew();
-      const controller = new AbortController();
-      inflight.current = controller;
-      actions.searchPrincipals(query, { signal: controller.signal }).then(
-        (answer) => mine === latest.current && setCircle(listOf(answer)),
+      ask(askAnew(), {}).then(
+        (answer) => answer && setCircle(listOf(answer)),
         // (Quiet: the last list stays — a refusal for the limit among them; the explicit step says what went wrong.)
         () => {},
       );
     }, SUGGEST_AFTER_MS);
     return () => window.clearTimeout(timer.current);
+    // (`ask` reads this render's `query`: the effect runs again whenever it changes.)
   }, [query, actions]);
   useEffect(() => () => void askAnew(), []);
 
@@ -150,20 +160,25 @@ function FindModal({ onClose, returnTo }) {
       return;
     }
     setError("");
-    const res = await run("lookup", () => actions.searchPrincipals(query, { exact: true }), () => "");
-    if (mine !== latest.current) return;
-    if (res.ok) {
-      setCircle(listOf(res.value));
-      setExact(res.value?.exact ?? null);
-    } else setError(friendErrorText("lookup", res.error));
+    setFinding(mine);
+    try {
+      const answer = await ask(mine, { exact: true });
+      if (!answer) return;
+      setCircle(listOf(answer));
+      setExact(answer.exact ?? null);
+    } catch (failure) {
+      if (mine === latest.current) setError(friendErrorText("lookup", failure));
+    } finally {
+      setFinding((now) => (now === mine ? 0 : now));
+    }
   };
 
   const person = exact?.person ?? null;
   const agent = exact?.agent ?? null;
-  const theirs = Array.isArray(exact?.agents) ? exact.agents : [];
-  // (What the exact step shows is not listed again under my circle.)
+  const theirs = offered(Array.isArray(exact?.agents) ? exact.agents : []);
+  // (What the exact step shows is not listed again under my circle; nor is an Agent that can no longer be added.)
   const shownExactly = new Set([person?.id, agent?.id, ...theirs.map((a) => a.id)].filter(Boolean));
-  const listed = circle.filter((entry) => !shownExactly.has(entry.id));
+  const listed = offered(circle).filter((entry) => !shownExactly.has(entry.id));
   const agentsBy = (via) => listed.filter((entry) => entry.kind === "agent" && entry.via === via);
   const sections = [
     ["好友", listed.filter((entry) => entry.kind !== "agent")],
@@ -172,7 +187,7 @@ function FindModal({ onClose, returnTo }) {
     ["已添加的 Agent", agentsBy("contact")],
   ];
   const openPerson = (who) => setOpen({ person: who });
-  const nothing = exact === null && circle.length === 0;
+  const nothing = exact === null && listed.length === 0;
 
   return (
     <Modal title="添加好友或 Agent" onClose={onClose} returnTo={returnTo} locked={adding} footer={<Btn disabled={adding} onClick={onClose}>完成</Btn>}>
@@ -192,7 +207,7 @@ function FindModal({ onClose, returnTo }) {
             />
           </Field>
           <Btn type="submit" variant="primary" disabled={busy !== null || !query}>
-            {busy === "lookup" ? "查找中…" : "查找"}
+            {finding ? "查找中…" : "查找"}
           </Btn>
         </form>
         {sections.map(
@@ -225,10 +240,10 @@ function FindModal({ onClose, returnTo }) {
             <PersonAgents person={{ ...person, displayName: state.people[person.id]?.name ?? person.displayName }} agents={theirs} onLive={onClose} />
           </>
         )}
-        {agent && <AgentCard key={agent.id} agent={agent} label="查找结果" onLive={onClose} onBusy={setAdding} />}
+        {agent && <AgentCard key={agent.id} agent={agent} label="查找结果" onLive={onClose} onBusy={setAdding} onGone={drop} />}
         {nothing && <p className="muted">没有找到。找不认识的人，要输入对方完整的账号名，例如 ann_li。</p>}
       </div>
-      {open?.agent && <AgentSheet agentId={open.agent.id} profile={open.agent} onClose={() => setOpen(null)} onLive={onClose} />}
+      {open?.agent && <AgentSheet agentId={open.agent.id} profile={open.agent} onClose={() => setOpen(null)} onLive={onClose} onGone={drop} />}
       {open?.person && <PersonProfile person={open.person} agents={open.agents ?? null} onClose={() => setOpen(null)} onLive={onClose} />}
     </Modal>
   );

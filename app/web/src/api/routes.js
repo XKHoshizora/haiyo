@@ -49,14 +49,18 @@ export const updateMemoryModel = (memoryModel) => request("PATCH", "/api/me", { 
 export const lookupPrincipal = (handle) => request("GET", withQuery("/api/principals/lookup", { handle }));
 /**
  * Finding people and Agents (Agent social; app/service/README.md `GET /api/principals/search`). Typed along: → {circle: [Entry]},
- * the caller's circle by a fragment of a name (Entry: a friend {id, handle, displayName, avatarVersion}, or an Agent's profile
- * {id, handle, displayName, avatarVersion, kind: "agent", ownerId, ownerName, intro} with via: "friend" | "group" | "contact"),
- * 120 a minute. `exact: true` (Enter, 查找) also → exact: {person, agents: [profile]} | {agent: profile} | null, in the lookup's
- * 30 a minute. `signal` ends a request a newer one replaced. 404 while the site's switch is off.
+ * the caller's circle by a fragment of a name (Entry: a friend {id, handle, displayName, avatarVersion}, or an Agent's card — the
+ * lookup's — {id, handle, displayName, avatarVersion, kind: "agent", ownerId, ownerName, intro, field} with via: "friend" | "group" |
+ * "contact"), 120 a minute together with `agentCard`. `exact: true` (Enter, 查找) also → exact: {person, agents: [card]} | {agent: card}
+ * | null, in the lookup's 30 a minute. `signal` ends a request a newer one replaced. 404 while the site's switch is off.
  */
 export const searchPrincipals = (q, { exact = false, signal } = {}) =>
   request("GET", withQuery("/api/principals/search", { q, exact: exact ? 1 : undefined }), undefined, signal ? { signal } : undefined);
-/** An Agent's profile by id (a group's member, a share link `/a/<id>`) → profile; 404 not_found when it is not discoverable to me, whatever the reason. */
+/**
+ * An Agent's card by id (a group's member, a share link `/a/<id>`) → the lookup's card {id, handle, displayName, avatarVersion, kind:
+ * "agent", ownerId, ownerName, intro, field}; 404 not_found when it is not discoverable to me, whatever the reason; 429 past the 120 a
+ * minute it shares with the search's suggestions.
+ */
 export const agentCard = (agentId) => request("GET", `/api/principals/agent-card/${seg(agentId)}`);
 
 // ───────── social

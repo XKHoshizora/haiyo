@@ -1,14 +1,14 @@
 // A person's profile (find-agent A, D10): their picture, name and account name, how we stand (the friend request), and 「{name}的 Agent」 —
 // the Agents of theirs I may see, for whoever knows their account name (R2), each opening the one card (AgentCard.jsx). Also for a person
 // this page holds nothing of (a search's result): the person is what the caller hands in.
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useStore } from "../data/store.jsx";
 import { commonErrorText, friendErrorText } from "../data/errorTexts.js";
 import { isAgent, nameOf } from "../state/selectors.js";
-import { blockedMe, iBlocked, relationOf } from "../state/social.js";
+import { blockedMe, iBlocked, relationOf, socialOn } from "../state/social.js";
 import { Avatar, Btn, Modal, Reason } from "../ui/primitives.jsx";
 import { useAction } from "./useAction.js";
-import { AgentRow, AgentSheet } from "./AgentCard.jsx";
+import { AgentRow, AgentSheet, useOfferedAgents } from "./AgentCard.jsx";
 
 /** What stops me from sending this person a request, or "" when I can. */
 export function whyNot(state, person) {
@@ -64,12 +64,14 @@ export function PersonRow({ person, onOpen, children }) {
  * 「{name}的 Agent」 of `person` ({id, handle, displayName}): `agents` when in hand (the add dialog's exact step), else asked by the exact
  * step of their account name (`GET /api/principals/search?exact=1`). Nothing while asked, when there is none, or when the step was refused
  * for its limit (429: the person is shown without them, and without an error). Each opens its card over the page; `onLive()` as the card's.
+ * An Agent whose add answered 404, or any of theirs once a block is known, is no longer listed (fix round 1, G2).
  */
 export function PersonAgents({ person, agents: given = null, onLive }) {
   const { actions } = useStore();
   const [asked, setAsked] = useState(null);
   const [failed, setFailed] = useState("");
-  const agents = given ?? asked;
+  const { offered, drop } = useOfferedAgents();
+  const agents = offered(given ?? asked ?? []);
   const [open, setOpen] = useState(null);
   useEffect(() => {
     if (given) return undefined;
@@ -87,7 +89,7 @@ export function PersonAgents({ person, agents: given = null, onLive }) {
   return (
     <>
       {failed && <p className="muted">{failed}</p>}
-      {agents && agents.length > 0 && (
+      {agents.length > 0 && (
         <>
           <h3>{title}</h3>
           <ul className="member-rows" aria-label={title}>
@@ -97,7 +99,7 @@ export function PersonAgents({ person, agents: given = null, onLive }) {
           </ul>
         </>
       )}
-      {open && <AgentSheet agentId={open.id} profile={open} onClose={() => setOpen(null)} onLive={onLive} />}
+      {open && <AgentSheet agentId={open.id} profile={open} onClose={() => setOpen(null)} onLive={onLive} onGone={drop} />}
     </>
   );
 }
@@ -105,9 +107,17 @@ export function PersonAgents({ person, agents: given = null, onLive }) {
 /**
  * The profile in a sheet (its title is the person's name), over the page or the dialog it was opened from. `person`: {id, handle (without
  * the @), displayName}; `agents`: their Agents when in hand. `onLive()`: an Agent of theirs let me in at once (this sheet closes first).
+ * The site's switch turned off closes it (G5).
  */
 export function PersonProfile({ person, agents = null, onClose, onLive, returnTo = null }) {
   const { state } = useStore();
+  const on = socialOn(state);
+  const closeNow = useRef(onClose);
+  closeNow.current = onClose;
+  useEffect(() => {
+    if (!on) closeNow.current();
+  }, [on]);
+  if (!on) return null;
   const name = state.people[person.id]?.name ?? person.displayName;
   const live = () => {
     onClose();

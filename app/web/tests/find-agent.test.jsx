@@ -7,7 +7,7 @@ import "./markdown-ready.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { A1, AG1, ANN, BO, G1, ME_ID, PRINCIPALS, agentConv, agentOf, agentPrincipal, apiError, deferred, group, syncOf } from "./fixtures.js";
-import { DORA, NOW, PEOPLE, button, click, dialog, elapse, flush, goContacts, inMain, installBrowser, openApp, toastText } from "./harness.jsx";
+import { DORA, NOW, PEOPLE, button, click, dialog, elapse, flush, goContacts, inMain, installBrowser, openApp, push, toastText } from "./harness.jsx";
 
 beforeEach(installBrowser);
 afterEach(() => {
@@ -23,7 +23,8 @@ const AGS = "00000000-0000-4000-8000-0000000000b6"; // a stranger's Agent
 const STR = "00000000-0000-4000-8000-0000000000a7"; // a stranger
 const SC = "00000000-0000-4000-8000-000000001001";
 
-const profile = (id, handle, displayName, ownerId, ownerName, intro = "") => ({ id, handle, displayName, avatarVersion: 0, kind: "agent", ownerId, ownerName, intro });
+/** An Agent's card as the service answers it (the lookup's: `field` too). */
+const profile = (id, handle, displayName, ownerId, ownerName, intro = "", field = "") => ({ id, handle, displayName, avatarVersion: 0, kind: "agent", ownerId, ownerName, intro, field });
 const person = (id, handle, displayName) => ({ id, handle, displayName, avatarVersion: 0 });
 const CIRCLE = [
   person(ANN, "ann", "小安"),
@@ -46,6 +47,24 @@ function routes(over = {}) {
     ...over,
   };
 }
+/** My conversation with 阿波's 厨师 once it let me in (a social conversation, 阿波 watching). */
+const visiting = () => ({
+  id: SC,
+  type: "agent_social",
+  title: null,
+  myRole: "speaker",
+  closed: false,
+  canSend: { ok: true },
+  social: { participants: [ME_ID, AGG], agents: [{ id: AGG, ownerId: BO }] },
+  members: [
+    { id: ME_ID, role: "speaker", isCreator: false },
+    { id: AGG, role: "speaker", isCreator: false },
+    { id: BO, role: "observer", isCreator: false },
+  ],
+  lastSeq: 0,
+  readSeq: 0,
+  unread: 0,
+});
 const MY_AGENT = { ...agentPrincipal(AG1), ownerId: ME_ID };
 const GROUP_AGENT = { ...agentPrincipal(AGG, "bo.cook", "厨师"), ownerId: BO };
 async function open({ on = true, convs = [], principals = [...PRINCIPALS, MY_AGENT], social, api = routes(), contacts = { mine: [], waiting: [] }, handlers = {} } = {}) {
@@ -208,6 +227,36 @@ describe("the explicit step (查找, Enter): the exact account name", () => {
     expect(inDialog().getByText("操作太频繁了，请稍等一分钟再试。")).toBeTruthy();
   });
 
+  it("a second explicit step with a new text is sent while the first is on its way; the first's late answer does not replace it", async () => {
+    const answers = [];
+    const api = routes({
+      searchPrincipals: vi.fn((q, { exact } = {}) => {
+        if (!exact) return Promise.resolve({ circle: [] });
+        const d = deferred();
+        answers.push(d);
+        return d.promise;
+      }),
+    });
+    await open({ api });
+    await openAdd();
+    type("stranger");
+    fireEvent.submit(field().closest("form"));
+    await flush();
+    type("ann");
+    fireEvent.submit(field().closest("form"));
+    await flush();
+    const exactCalls = api.searchPrincipals.mock.calls.filter(([, options]) => options?.exact);
+    expect(exactCalls.map(([q]) => q)).toEqual(["stranger", "ann"]);
+    expect(exactCalls[0][1].signal.aborted).toBe(true);
+    await act(async () => answers[1].resolve({ circle: [], exact: { person: person(ANN, "ann", "小安"), agents: [] } }));
+    await act(async () => answers[0].resolve({ circle: [], exact: STRANGER }));
+    await flush();
+    const found = inDialog().getByRole("list", { name: "查找结果" });
+    expect(within(found).getByText("小安")).toBeTruthy();
+    expect(within(found).queryByText("陌生人")).toBeNull();
+    expect(inDialog().getByRole("button", { name: "查找" }).disabled).toBe(false);
+  });
+
   it("an exact hit is not listed twice: the person found is left out of 好友 and their Agents out of 好友的 Agent", async () => {
     const exact = { person: person(ANN, "ann", "小安"), agents: [profile(AGF, "ann.helper", "安安", ANN, "小安")] };
     const api = routes({ searchPrincipals: vi.fn(async (q, { exact: asked } = {}) => (asked ? { circle: CIRCLE, exact } : { circle: CIRCLE })) });
@@ -244,15 +293,21 @@ describe("the one Agent card (D9): every way of finding an Agent ends in it", ()
     expect(top().getByRole("button", { name: "添加厨师" }).disabled).toBe(true);
   });
 
-  it("let in at once: 「已添加」, both dialogs close and the chat is asked for", async () => {
+  it("let in at once: 「已添加」, both dialogs close and that new conversation opens", async () => {
     const api = routes();
-    api.addAgentContact.mockResolvedValueOnce({ state: "live", conversationId: SC });
-    const { transport } = await openCard(api);
-    const syncs = transport.log.filter((x) => x === "sync").length;
+    const app = await openCard(api);
+    // The service let me in: the conversation with 厨师 exists from now on (the sync the add asks for brings it).
+    api.addAgentContact.mockImplementationOnce(async () => {
+      app.env.sync = () => ({ ...syncOf([visiting()], [], [...PRINCIPALS, MY_AGENT, GROUP_AGENT]), social: { enabled: true } });
+      return { state: "live", conversationId: SC };
+    });
     await click(top().getByRole("button", { name: "添加厨师" }));
     expect(toastText()).toBe("已添加");
     expect(dialogs()).toHaveLength(0);
-    expect(transport.log.filter((x) => x === "sync").length).toBeGreaterThan(syncs);
+    expect(screen.getByRole("region", { name: "厨师" })).toBeTruthy();
+    // (The two dialogs' history entries are left first: the address follows once the browser has stepped back over them.)
+    await elapse(2100);
+    expect(location.pathname).toBe(`/chat/${SC}`);
   });
 
   it("cooldown: the day it may be asked again; the card stays", async () => {
@@ -264,7 +319,7 @@ describe("the one Agent card (D9): every way of finding an Agent ends in it", ()
     expect(dialogs()).toHaveLength(2);
   });
 
-  it("a block applied after the card was drawn: the service's refusal is said in its existing words, nothing is let in, no chat opens", async () => {
+  it("an add answered 404 (a block applied after the card was drawn): the existing sentence, the card is no longer actionable, its row leaves the list", async () => {
     const api = routes();
     api.addAgentContact.mockRejectedValueOnce(apiError(404, "not_found"));
     await openCard(api);
@@ -273,6 +328,62 @@ describe("the one Agent card (D9): every way of finding an Agent ends in it", ()
     expect(dialogs()).toHaveLength(2);
     expect(top().queryByText(/已发给/)).toBeNull();
     expect(document.querySelector(".chat")).toBeNull();
+    // What the member list would show of it: the name, the picture, the Agent tag; no button, no owner, no disclosure.
+    expect(top().getByText("厨师", { selector: "strong" })).toBeTruthy();
+    expect(top().getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["关闭"]);
+    expect(top().queryByTestId("social-disclosure")).toBeNull();
+    expect(dialogs().at(-1).textContent).not.toContain("主人");
+    await click(top().getByRole("button", { name: "关闭" }));
+    expect(inDialog().queryByText("厨师")).toBeNull();
+    expect(inDialog().getByText("安安")).toBeTruthy();
+  });
+
+  it("editing the text while the found Agent's add is on its way: once the add settles the dialog can be left again", async () => {
+    const pending = deferred();
+    const api = routes({
+      searchPrincipals: vi.fn(async (q, { exact } = {}) => (exact ? { circle: [], exact: { agent: STRANGER.agents[0] } } : { circle: [] })),
+      addAgentContact: vi.fn(() => pending.promise),
+    });
+    await open({ api });
+    await openAdd();
+    type("stranger.guide");
+    await click(inDialog().getByRole("button", { name: "查找" }));
+    await click(inDialog().getByRole("button", { name: "添加向导" }));
+    expect(button("完成").disabled).toBe(true);
+    type("stranger.guid");
+    await flush();
+    expect(inDialog().queryByRole("button", { name: "添加向导" })).toBeNull();
+    await act(async () => pending.resolve({ state: "requested", until: new Date(NOW + 7 * 86_400_000).toISOString() }));
+    await flush();
+    expect(toastText()).toBe("申请已发送");
+    expect(button("完成").disabled).toBe(false);
+    await click(button("完成"));
+    expect(dialogs()).toHaveLength(0);
+  });
+
+  it("blocking someone drops the rows of their Agents (the search's, a contact card's) and a card of theirs that is open stops being actionable", async () => {
+    const friends = { friends: [PEOPLE[ANN]], incoming: [], outgoing: [], blocked: [], blockedBy: [] };
+    const exact = { person: person(ANN, "ann", "小安"), agents: [profile(AGF, "ann.helper", "安安", ANN, "小安")] };
+    const api = routes({ searchPrincipals: vi.fn(async (q, { exact: asked } = {}) => (asked ? { circle: [], exact } : { circle: CIRCLE })) });
+    const app = await open({ api, social: friends });
+    await goContacts();
+    await click(screen.getByText("小安", { selector: ".list-col .row-name" }));
+    await click(within(inMain().getByRole("list", { name: "小安的 Agent" })).getByRole("button", { name: /安安/ }));
+    expect(top().getByRole("button", { name: "添加安安" })).toBeTruthy();
+    app.env.social = { ...friends, blocked: [PEOPLE[ANN]] };
+    await push(app.transport, { type: "social" });
+    await flush();
+    expect(top().queryByRole("button", { name: "添加安安" })).toBeNull();
+    expect(top().queryByTestId("social-disclosure")).toBeNull();
+    await click(top().getByRole("button", { name: "关闭" }));
+    expect(inMain().queryByRole("list", { name: "小安的 Agent" })).toBeNull();
+    // The search's own list: 小安's Agent is not offered either.
+    await click(button("添加好友"));
+    type("an");
+    await elapse(300);
+    await flush();
+    expect(inDialog().queryByText("安安")).toBeNull();
+    expect(inDialog().getByText("厨师")).toBeTruthy();
   });
 
   it("already added or already asked: the reason instead of the button's action", async () => {
@@ -390,6 +501,50 @@ describe("an Agent in a group (D1, D10)", () => {
     expect(top().queryByTestId("social-disclosure")).toBeNull();
   });
 
+  it("a card refused for its limit (429) is drawn as one not to be found: the member list's face, nothing more, and asked again next time", async () => {
+    const api = routes({ agentCard: vi.fn(async () => Promise.reject(apiError(429, "rate_limited"))) });
+    await open({ api, convs: [groupWith([AGG])], principals: GROUP_PRINCIPALS });
+    await openMembers();
+    await click(within(memberRow("厨师")).getAllByRole("button")[0]);
+    expect(top().getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["关闭"]);
+    expect(dialogs().at(-1).querySelector('[role="alert"]')).toBeNull();
+    expect(dialogs().at(-1).textContent).not.toMatch(/主人|频繁/);
+    await click(top().getByRole("button", { name: "关闭" }));
+    api.agentCard.mockResolvedValueOnce(profile(AGG, "bo.cook", "厨师", BO, "阿波"));
+    await click(within(memberRow("厨师")).getAllByRole("button")[0]);
+    expect(api.agentCard).toHaveBeenCalledTimes(2);
+    expect(top().getByRole("button", { name: "添加厨师" })).toBeTruthy();
+  });
+
+  it("the switch turned off while a member's card is open: the card closes and nothing can be added", async () => {
+    const api = routes({ agentCard: vi.fn(async () => profile(AGG, "bo.cook", "厨师", BO, "阿波")) });
+    const app = await open({ api, convs: [groupWith([AGG])], principals: GROUP_PRINCIPALS });
+    await openMembers();
+    await click(within(memberRow("厨师")).getAllByRole("button")[0]);
+    expect(top().getByRole("button", { name: "添加厨师" })).toBeTruthy();
+    app.env.sync = () => syncOf([groupWith([AGG])], [], GROUP_PRINCIPALS);
+    await act(async () => app.layer.actions.syncNow());
+    await flush();
+    expect(dialogs()).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "添加厨师" })).toBeNull();
+    expect(within(memberRow("厨师")).getAllByRole("button").map((b) => b.textContent)).toEqual(["移除"]);
+    expect(api.addAgentContact).not.toHaveBeenCalled();
+  });
+
+  it("the switch turned off while a person's profile is open from the details panel: it closes", async () => {
+    const api = routes({ searchPrincipals: vi.fn(async () => ({ circle: [], exact: { person: person(BO, "bo", "阿波"), agents: [] } })) });
+    const app = await open({ api, convs: [groupWith()], principals: GROUP_PRINCIPALS });
+    await click(screen.getByText("周末小组", { selector: ".list-col .row-name" }));
+    fireEvent.click(button("会话资料"));
+    await flush();
+    await click(within(document.querySelector(".side-col")).getByRole("button", { name: /阿波/ }));
+    expect(top().getByRole("heading", { name: "阿波" })).toBeTruthy();
+    app.env.sync = () => syncOf([groupWith()], [], GROUP_PRINCIPALS);
+    await act(async () => app.layer.actions.syncNow());
+    await flush();
+    expect(dialogs()).toHaveLength(0);
+  });
+
   it("my own Agent: its card without a button, and nothing is asked", async () => {
     const api = routes();
     await open({ api, convs: [groupWith([AG1]), agentConv(A1, AG1)], principals: GROUP_PRINCIPALS, handlers: { agents: () => ({ agents: [agentOf(AG1)] }) } });
@@ -451,6 +606,20 @@ describe("a share link /a/<id> (D2, D3)", () => {
     expect(api.agentCard).toHaveBeenCalledWith(AGS);
     expect(toastText()).toBe("没有找到这个账号。");
     expect(dialogs()).toHaveLength(0);
+  });
+
+  it("a card refused for its limit (429) reads as one not to be found, and opening the link again asks again", async () => {
+    history.replaceState(null, "", `/a/${AGG}`);
+    const api = routes({ agentCard: vi.fn(async () => Promise.reject(apiError(429, "rate_limited"))) });
+    await open({ api });
+    expect(toastText()).toBe("没有找到这个账号。");
+    expect(dialogs()).toHaveLength(0);
+    cleanup();
+    history.replaceState(null, "", `/a/${AGG}`);
+    api.agentCard.mockResolvedValueOnce(profile(AGG, "bo.cook", "厨师", BO, "阿波"));
+    await open({ api });
+    expect(api.agentCard).toHaveBeenCalledTimes(2);
+    expect(top().getByRole("button", { name: "添加厨师" })).toBeTruthy();
   });
 
   it("my own Agent's link: its card without a button, nothing asked", async () => {

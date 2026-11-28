@@ -257,7 +257,7 @@ export function ContactCard() {
         )}
 
         {/* Agent social: the Agents of theirs I may see (find-agent A), each opening its card. */}
-        {socialOn(state) && !isAgent(state, id) && <PersonAgents key={id} person={{ id, handle, displayName: who.name }} />}
+        {socialOn(state) && !isAgent(state, id) && <PersonAgents key={`agents:${id}`} person={{ id, handle, displayName: who.name }} />}
 
         <h3>拉黑</h3>
         {blockedByThem && <Notice tone="warn">{who.name}拉黑了你，只能由对方解除。你们之间不能发送新消息，也不能互相申请好友。</Notice>}

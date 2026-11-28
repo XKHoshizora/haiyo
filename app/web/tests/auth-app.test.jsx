@@ -1143,6 +1143,30 @@ describe("a share link opened signed out (find-agent D3): its page after the sig
     await screen.findByRole("button", { name: "登录" });
     await signIn();
     expect(place()).toBe(LINK);
+    // (Followed, so gone: nobody's next sign-in is sent there again.)
+    expect(localStorage.getItem(RETURN_KEY)).toBeNull();
+  });
+
+  it("an unrelated signed-out visit (the list's address) leaves it kept", async () => {
+    await visitedSignedOut();
+    at("/");
+    mount(outApi());
+    await screen.findByRole("button", { name: "登录" });
+    cleanup();
+    at("/signin");
+    mount(signInApi());
+    await screen.findByRole("button", { name: "登录" });
+    await signIn();
+    expect(place()).toBe(LINK);
+  });
+
+  it("kept for an hour: 59 minutes later it is followed", async () => {
+    localStorage.setItem(RETURN_KEY, JSON.stringify({ path: LINK, at: Date.now() - 59 * 60 * 1000 }));
+    at("/signin");
+    mount(signInApi());
+    await screen.findByRole("button", { name: "登录" });
+    await signIn();
+    expect(place()).toBe(LINK);
   });
 
   it("after registering: the verification mail's page, 去登录, then the link's page", async () => {
@@ -1188,7 +1212,9 @@ describe("a share link opened signed out (find-agent D3): its page after the sig
   it.each([
     ["another site", { path: "//evil.example/a/00000000-0000-4000-8000-0000000000b6", at: Date.now() }],
     ["a page that is not a share link", { path: "/settings/providers", at: Date.now() }],
-    ["a link kept more than a day ago", { path: LINK, at: Date.now() - 25 * 60 * 60 * 1000 }],
+    ["a link kept more than an hour ago", { path: LINK, at: Date.now() - 61 * 60 * 1000 }],
+    ["a share link with a slash after it", { path: `${LINK}/`, at: Date.now() }],
+    ["a share link with more after it", { path: `${LINK}/x`, at: Date.now() }],
     ["not what this page writes", "/a/00000000-0000-4000-8000-0000000000b6"],
   ])("what is kept is checked when it is read: %s is not followed", async (_label, stored) => {
     localStorage.setItem(RETURN_KEY, typeof stored === "string" ? stored : JSON.stringify(stored));
